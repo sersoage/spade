@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="https://huggingface.co/collections/spade-rl"><b>&#129303; Models &amp; Data</b></a> &nbsp;|&nbsp;
-  <a href="https://huggingface.co/spade-rl"><b>&#9824; SPADE on Hugging Face</b></a> &nbsp;|&nbsp;
+  <a href="https://huggingface.co/papers/2608.19197"><b>&#9824; SPADE on Hugging Face</b></a> &nbsp;|&nbsp;
   <a href="https://arxiv.org/abs/2608.19197"><b>&#128196; Paper</b></a>
 </p>
 
