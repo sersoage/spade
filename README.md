@@ -144,7 +144,7 @@ If you find our work useful for your research, please consider citing:
 ```bibtex
 @article{liu2026spade,
   title={SPADE: Self-Play in Adaptive Synthetic Executable Environments},
-  author={Liu, Bo and Yu, Simon and Jiang, Yiding and Qu, Ao and Zhao, Andrew and Liu, Zichen and Kim, Junsu and Zhou, Zijian and Kim, Seungone and Ren, Tongzheng and others},
+  author={Liu, Bo and Yu, Simon and Jiang, Yiding and Qu, Ao and Zhao, Andrew and Liu, Zichen and Kim, Junsu and Zhou, Zijian and Kim, Seungone and Ren, Tongzheng and Liu, Mickel and Yu, Hanfei and Chen, Zhaorun and Shi, Weiyan and Liang, Paul Pu and Zettlemoyer, Luke and Choi, Yejin and Jaques, Natasha},
   journal={arXiv preprint arXiv:2608.19197},
   year={2026}
 }
