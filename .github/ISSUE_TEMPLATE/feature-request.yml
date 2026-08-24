@@ -1,29 +1,14 @@
 name: "✨ Feature Request"
 description: Suggest an improvement or extension.
-title: "[Feature Request] "
 labels: [enhancement]
 assignees: [Benjamin-eecs]
 body:
-  - type: checkboxes
-    id: prerequisites
-    attributes:
-      label: Required prerequisites
-      options:
-        - label: I have searched the [Issue Tracker](https://github.com/spade-rl/spade/issues) for a duplicate.
-          required: true
-
   - type: textarea
-    id: motivation
+    id: proposal
     attributes:
-      label: Motivation
-      description: What problem does this solve? Link related issues or papers if any.
+      label: Proposal
+      description: >-
+        What and why. New training-loop behavior should sit behind an off-by-default
+        flag so that default runs reproduce the paper.
     validations:
       required: true
-
-  - type: textarea
-    id: solution
-    attributes:
-      label: Proposed solution
-      description: >-
-        Sketch the change. Note that this repository is the reproduction artifact for the
-        paper, so new training-loop behavior must sit behind an off-by-default flag.

@@ -1,57 +1,14 @@
-name: "\U0001F41B Bug Report"
-description: Something in the codebase does not work as documented.
-title: "[BUG] "
+name: "🐛 Bug Report"
+description: Something does not work as documented.
 labels: [bug]
 assignees: [Benjamin-eecs]
 body:
-  - type: checkboxes
-    id: prerequisites
-    attributes:
-      label: Required prerequisites
-      options:
-        - label: I have read the [README](https://github.com/spade-rl/spade#readme) and the setting-specific README under `cmd/` or `eval_offline/`.
-          required: true
-        - label: I have searched the [Issue Tracker](https://github.com/spade-rl/spade/issues) for a duplicate.
-          required: true
-
-  - type: input
-    id: version
-    attributes:
-      label: Version and commit
-      description: >-
-        Output of `python3 -c 'print(__import__("spade").__version__)'` and `git rev-parse --short HEAD`.
-      placeholder: "0.1.0 @ 9b2b813"
-    validations:
-      required: true
-
-  - type: dropdown
-    id: setting
-    attributes:
-      label: Setting
-      options:
-        - Games self-play (cmd/games)
-        - Tool-use self-play (cmd/tool_use)
-        - Ablations (cmd/ablations)
-        - Tinker backend (cmd/tinker)
-        - Offline evaluation (eval_offline)
-        - Core library (spade/)
-        - Other
-    validations:
-      required: true
-
   - type: textarea
     id: description
     attributes:
-      label: Problem description
+      label: What happened
       description: >-
-        What you ran, what you expected, and what happened instead. Include the exact
-        launch command and relevant environment variables (`MODEL_ROOT`, `CORPUS_FILE`, ...),
-        with credentials removed.
+        What you ran (command + setting), what you expected, and what happened instead.
+        Include the commit (`git rev-parse --short HEAD`) and logs.
     validations:
       required: true
-
-  - type: textarea
-    id: traceback
-    attributes:
-      label: Logs / traceback
-      render: text
