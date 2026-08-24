@@ -1,0 +1,23 @@
+name: "\U0001F914 Question"
+description: Ask about usage, the training recipes, or reproducing the paper.
+title: "[Question] "
+labels: [question]
+assignees: [Benjamin-eecs]
+body:
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Required prerequisites
+      options:
+        - label: I have read the [README](https://github.com/spade-rl/spade#readme) and the setting-specific README under `cmd/` or `eval_offline/`.
+          required: true
+        - label: I have searched the [Issue Tracker](https://github.com/spade-rl/spade/issues) for a duplicate.
+          required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Include commands, snippets, or links where relevant.
+    validations:
+      required: true

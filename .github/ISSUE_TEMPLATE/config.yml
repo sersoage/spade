@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Checkpoints, datasets, and corpora
+    url: https://huggingface.co/spade-rl
+    about: Questions about the released models and data are best asked on the Hugging Face repos.
+  - name: Paper discussion
+    url: https://huggingface.co/papers/2608.19197
+    about: Comments on the paper itself can go to the Hugging Face paper page.
