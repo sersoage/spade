@@ -83,6 +83,14 @@ eval = [
   "datasets>=2.0",
   "httpx>=0.24",
   "requests>=2.28",
+  # GEM benchmark runtime for the games config (GPQA/LCB/Reasoning-Gym run
+  # through spade.core.eval.GemEvaluator; import name `gem`).
+  "gem-llm",
+  "reasoning-gym",
+  # \boxed{} answer scoring (AIME, GPQA); antlr pin is math_verify's LaTeX
+  # parser backend.
+  "math_verify",
+  "antlr4-python3-runtime==4.9.3",
   "tau2 @ git+https://github.com/sierra-research/tau2-bench.git",
 ]
 

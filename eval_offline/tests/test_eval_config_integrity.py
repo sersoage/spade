@@ -33,7 +33,7 @@ CONFIG_DIRS = (
     REPO_ROOT / "eval_configs",
 )
 GEM_EVALUATOR_SRC = REPO_ROOT / "spade" / "core" / "eval" / "gem_evaluator.py"
-GAMES_GEM_CONFIG = REPO_ROOT / "eval_offline" / "configs" / "_games_gem.yaml"
+GAMES_GEM_CONFIG = REPO_ROOT / "eval_offline" / "configs" / "games.yaml"
 
 # Paper column -> Golden Goose bucket for the four RG cells of the RQ1 table.
 RQ1_RG_BUCKETS = {

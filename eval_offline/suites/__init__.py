@@ -14,8 +14,6 @@ class SuiteFn(Protocol):
 BUILTIN_SUITES = {
     "aime": "eval_offline.suites.aime",
     "gem": "eval_offline.suites.gem",
-    "gpqa_diamond": "eval_offline.suites.gpqa_diamond",
-    "livecodebench": "eval_offline.suites.livecodebench",
     "bfcl_full": "eval_offline.suites.bfcl_full",
     "tau2": "eval_offline.suites.tau2",
     "acebench": "eval_offline.suites.acebench",

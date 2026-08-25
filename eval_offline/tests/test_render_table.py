@@ -27,8 +27,8 @@ def test_render_emits_markdown_row(tmp_path):
         "metrics": {
             "aime2025_pass1": 0.474,
             "aime2026_pass1": 0.500,
-            "gpqa_diamond_avg_at_n": 0.620,
-            "livecodebench_pass_at_1": 0.351,
+            "gem_eval/task_mcq_gpqa_diamond_official/win_rate": 0.620,
+            "gem_eval/task_eval_livecodebench_v6/win_rate": 0.351,
         }
     }
     results_path = tmp_path / "results.json"

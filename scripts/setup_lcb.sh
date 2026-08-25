@@ -42,7 +42,7 @@ else
     wget --continue -O "${JSONL}" "${JSONL_URL}"
     got="$(stat -c%s "${JSONL}")"
     if [ "${got}" != "${JSONL_BYTES}" ]; then
-        echo "[lcb] WARNING: size mismatch (got ${got}, expected ${JSONL_BYTES}) — re-download." >&2
+        echo "[lcb] WARNING: size mismatch (got ${got}, expected ${JSONL_BYTES}); re-download." >&2
         exit 1
     fi
     echo "[lcb] test6.jsonl OK (${got} bytes)"
@@ -50,6 +50,6 @@ fi
 
 echo
 echo "[lcb] setup complete. The eval runners already point at:"
-echo "    LCB_OFFICIAL_DIR / LCB_ROOT = ${LCB_DIR}"
+echo "    LCB_OFFICIAL_DIR = ${LCB_DIR}"
 echo "    LCB_V6_JSONL                = ${JSONL}"
 echo "  (inside the container these map to /workspace/spade-workspace/... via the bind)"

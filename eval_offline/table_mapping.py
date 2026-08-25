@@ -5,8 +5,8 @@ from __future__ import annotations
 RQ1_COLUMNS: dict[str, str] = {
     "AIME-25": "aime2025_pass1",
     "AIME-26": "aime2026_pass1",
-    "GPQA-Diamond": "gpqa_diamond_avg_at_n",
-    "LiveCodeBench": "livecodebench_pass_at_1",
+    "GPQA-Diamond": "gem_eval/task_mcq_gpqa_diamond_official/win_rate",
+    "LiveCodeBench": "gem_eval/task_eval_livecodebench_v6/win_rate",
     # Golden Goose rollups over the 100 individual rg:*-hard tasks, emitted by
     # GemEvalResult.to_metrics_dict as gem_eval/category_rg_<bucket>/win_rate.
     "RG:Math": "gem_eval/category_rg_math/win_rate",
