@@ -16,6 +16,7 @@ from tqdm.asyncio import tqdm
 # Add project root to path
 sys.path.append('.')
 
+from spade.core.proofpack_bridge import validate_game_with_proofpack
 from spade.core.game_generator import SyntheticGameGenerator
 from spade.core.envs.synthetic_game_env import make_synthetic_env
 
@@ -98,6 +99,13 @@ async def generate_and_validate_game_async(
                 None,
                 lambda: generator.generate_game(skill, difficulty=difficulty)
             )
+
+            print(f'[{skill_idx+1}]   Running ProofPack V0-V4 formal qualification ladder...')
+            is_valid, reason = validate_game_with_proofpack(game_spec.code)
+            if not is_valid:
+                print(f'[{skill_idx+1}]   ✗ ProofPack rejected game: {reason}')
+                raise ValueError(f'ProofPack qualification failed: {reason}')
+            print(f'[{skill_idx+1}]   ✓ ProofPack certified: {reason}')
 
             generator.save_game(game_spec, game_file)
             print(f'[{skill_idx+1}]   ✓ Saved to {game_file}')

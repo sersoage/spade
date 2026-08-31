@@ -8,8 +8,19 @@ from spade.core.envs.synthetic_game_env import make_synthetic_env
 logger = logging.getLogger(__name__)
 
 
+from spade.core.proofpack_bridge import validate_game_with_proofpack
+
+
 def validate_game(game_file: Path) -> bool:
+    """Validate a game file using ProofPack V0-V4 qualification and sandbox runtime."""
     try:
+        game_code = Path(game_file).read_text(encoding="utf-8")
+        is_valid, reason = validate_game_with_proofpack(game_code)
+        if not is_valid:
+            logger.warning("ProofPack validation failed for %s: %s", game_file, reason)
+            return False
+
+        # Additional quick synthetic runtime check
         env = make_synthetic_env(str(game_file))
         env.reset()
         for action in ["1", "2", "test"]:
@@ -19,7 +30,7 @@ def validate_game(game_file: Path) -> bool:
         env.close()
         return True
     except Exception as exc:
-        logger.warning("Game validation failed: %s", exc)
+        logger.warning("Game validation failed for %s: %s", game_file, exc)
         return False
 
 
