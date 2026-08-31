@@ -164,6 +164,12 @@ ProofPack receipt, complete paired trace, Assay manifest, decision, certificatio
 ledger. The manifest binds the receipt and trace digests. The CLI returns nonzero on dependency,
 generation, qualification, leakage, rollout, or persistence failure.
 
+This command is intentionally a one-cluster smoke harness. Repeating it does not produce an
+aggregate multi-environment experiment. The
+[assurance guide](docs/assurance-integration.md#multi-environment-agy-experiments) documents the
+proposed larger `agy` pilot, its invocation budget, and the runner capabilities that must exist
+before that study is executed.
+
 ## Tinker Training
 
 SPADE also supports training with [Thinking Machines](https://thinkingmachines.ai/tinker)' **Tinker** distributed training framework through the integration under `spade/tinker/`.

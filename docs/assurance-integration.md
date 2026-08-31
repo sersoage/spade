@@ -111,6 +111,33 @@ declared independent environment clusters, nonzero identified between-cluster un
 effect threshold, and significance. That statistical result alone is not release approval; lock
 emission has separate registration and operational evidence requirements.
 
+## Multi-environment `agy` experiments
+
+`run_live_spade_eval.py` is a one-cluster smoke harness. Re-running it creates separate one-cluster
+bundles; it does not aggregate independent clusters and must not be reported as a larger experiment.
+Do not wrap the current command in a shell loop as a substitute for an experiment runner.
+
+A proposed calibration pilot uses 18 independently generated environments: one medium and one hard
+environment for each of SPADE's nine cognitive skills. Each environment is evaluated at the three
+ProofPack-qualified seeds `[0, 1, 42]`, with paired hinted and unhinted episodes from the same
+explicitly pinned `agy` model and a five-turn horizon. The environment is the independent cluster;
+the three seeds are within-environment repetitions. All environments and hints are locked before
+actor rollouts, arm order is counterbalanced, and all 18 clusters feed one Assay decision. Pilot data
+must remain separate from any later confirmatory study.
+
+That pilot is not supported by the current CLI. Before execution, the runner needs a sealed schedule,
+multi-seed evaluation, deterministic counterbalancing, pre-outcome reserve handling, idempotent
+resume, per-call provenance, a hard invocation cap, and one aggregate Assay write. It must bind the
+schedule, repository revisions, runtime and sandbox details, explicit model request, and all leaf
+artifact digests. The subscription CLI does not expose trustworthy token or cost records, so the
+evidence must not claim them.
+
+The 18-cluster design needs at least 180 `agy` invocations and can use substantially more when
+generation retries, hint rewrites, or multi-turn episodes occur. Use a separately authorized pilot
+cap of 450 invocations and stop incomplete if that cap is reached. A confirmatory stage should only
+be sized from the locked pilot variance, receive its own authorization, and never pool pilot
+outcomes. Neither stage can authorize `model.lock` through this integration.
+
 ## Verification
 
 Run the focused SPADE integration tests from this repository:
