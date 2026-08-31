@@ -115,6 +115,30 @@ python -m eval_offline.render_table --help
 
 The runner needs the `[eval]` extra and per-benchmark data setup; both, plus the benchmark matrix, are documented in [`eval_offline/README.md`](eval_offline/README.md). `eval_configs/` is separate: those YAML files drive the in-loop evaluations the training launchers run during a job.
 
+## ProofPack Qualification & Assay Certification
+
+SPADE integrates with **ProofPack** (for $0 fail-closed environment qualification) and **Assay** (for autocurriculum benchmark emission and cluster-robust statistical model promotion):
+
+* **ProofPack $V0-V4$ Qualification**: [`spade/core/proofpack_bridge.py`](spade/core/proofpack_bridge.py) audits generated Gym environments against syntax/AST checks, multi-seed resets, Oracle solvability ($r_{\text{oracle}} = 1.0$), and no-agent baselines ($r_{\text{no-op}} = 0.0$).
+* **Assay Statistics Spine**: Trajectories are ingested into Evidence Schema v2, and candidate models are evaluated using Intra-Cluster Correlation (ICC) and cluster-robust standard errors (`clustered_se`) before binding releases in `model.lock`.
+
+### Live Evaluation Runner
+
+You can run an end-to-end live evaluation (Designer synthesis $\rightarrow$ ProofPack qualification $\rightarrow$ Hint generation $\rightarrow$ Dual-lane agent rollouts $\rightarrow$ Assay manifest emission) with zero API keys using your Google Antigravity (`agy`) CLI:
+
+```bash
+# Run with Google CLI subscription (zero API keys)
+python3 tools/run_live_spade_eval.py \
+  --provider agy \
+  --skill "Graph Theory & Shortest Path"
+
+# Or run with OpenRouter / OpenAI
+python3 tools/run_live_spade_eval.py \
+  --provider openrouter \
+  --model deepseek/deepseek-chat \
+  --skill "Combinatorial Knapsack & Dynamic Programming"
+```
+
 ## Tinker Training
 
 SPADE also supports training with [Thinking Machines](https://thinkingmachines.ai/tinker)' **Tinker** distributed training framework through the integration under `spade/tinker/`.
