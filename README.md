@@ -167,8 +167,9 @@ generation, qualification, leakage, rollout, or persistence failure.
 This command is intentionally a one-cluster smoke harness. Repeating it does not produce an
 aggregate multi-environment experiment. The
 [assurance guide](docs/assurance-integration.md#multi-environment-agy-experiments) documents the
-proposed larger `agy` pilot, its invocation budget, and the runner capabilities that must exist
-before that study is executed.
+sealed 18-cluster `agy` pilot runner, its dry-run-first workflow, invocation budget, resume and
+provenance controls, sealed output root, and the explicit execution acknowledgement required before
+provider calls.
 
 ## Tinker Training
 

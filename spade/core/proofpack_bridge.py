@@ -7,10 +7,10 @@ qualification and the bridge then requires an importable, compatible
 ``proofpack_env`` installation. A requested qualification can never silently
 degrade to native SPADE validation.
 
-The isolation boundary covers qualification executions only. After a game is
-accepted, SPADE's existing native validator and training rollout code load that
-source in the trainer process. This bridge is a generation gate, not a sandbox
-for the training runtime.
+The isolation boundary covers qualification executions only. A positive
+ProofPack receipt replaces SPADE's native generation-time smoke check, but later
+training/playback still loads accepted source in the trainer process. This
+bridge is a generation gate, not a sandbox for the training runtime.
 """
 
 from __future__ import annotations
@@ -135,6 +135,87 @@ def _positive_report_error(
         if metadata.get(key) != expected:
             return f"receipt metadata {key!r} does not match the requested qualification"
     return None
+
+
+def validate_positive_proofpack_receipt(
+    report: Any,
+    *,
+    game_code: str,
+    action_format: str,
+    seeds: Sequence[int],
+    timeout_seconds: float,
+    max_turns: int,
+) -> tuple[bool, str]:
+    """Validate a claimed positive ProofPack receipt without running its qualifier.
+
+    This is the reusable fail-closed boundary for persisted or externally supplied
+    receipts. It binds the positive bit to the exact candidate source and requested
+    qualification configuration. The seed sequence is order-sensitive.
+    """
+    if getattr(report, "passed", None) is not True:
+        return False, "receipt is not marked passed"
+    if not isinstance(game_code, str) or not game_code.strip():
+        return False, "candidate source must be non-empty text"
+    if not isinstance(action_format, str) or action_format not in SUPPORTED_ACTION_FORMATS:
+        return False, "requested action_format is unsupported"
+    try:
+        normalized_seeds = list(seeds)
+    except TypeError:
+        return False, "requested seeds must be a non-empty sequence of integers"
+    if not normalized_seeds or any(type(seed) is not int for seed in normalized_seeds):
+        return False, "requested seeds must be a non-empty sequence of integers"
+    try:
+        normalized_timeout = float(timeout_seconds)
+    except (TypeError, ValueError, OverflowError):
+        normalized_timeout = math.nan
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(normalized_timeout)
+        or normalized_timeout <= 0
+    ):
+        return False, "requested timeout_seconds must be a positive finite number"
+    if type(max_turns) is not int or max_turns <= 0:
+        return False, "requested max_turns must be positive"
+
+    metadata = getattr(report, "metadata", None)
+    if not isinstance(metadata, dict):
+        return False, "receipt lacks qualification metadata"
+    receipt_action_format = metadata.get("action_format")
+    if not isinstance(receipt_action_format, str):
+        return False, "receipt metadata 'action_format' must be text"
+    receipt_seeds = metadata.get("seeds")
+    if not isinstance(receipt_seeds, list) or any(
+        type(seed) is not int for seed in receipt_seeds
+    ):
+        return False, "receipt metadata 'seeds' must be an ordered integer list"
+    if type(metadata.get("max_turns")) is not int:
+        return False, "receipt metadata 'max_turns' must be an integer"
+    receipt_timeout = metadata.get("timeout_seconds")
+    if isinstance(receipt_timeout, bool) or not isinstance(receipt_timeout, (int, float)):
+        return False, "receipt metadata 'timeout_seconds' must be numeric"
+    try:
+        normalized_receipt_timeout = float(receipt_timeout)
+    except (TypeError, ValueError, OverflowError):
+        normalized_receipt_timeout = math.nan
+    if not math.isfinite(normalized_receipt_timeout):
+        return False, "receipt metadata 'timeout_seconds' must be finite"
+    receipt_boundary = metadata.get("execution_boundary")
+    if not isinstance(receipt_boundary, str):
+        return False, "receipt metadata 'execution_boundary' must be text"
+
+    report_error = _positive_report_error(
+        report,
+        game_code=game_code,
+        action_format=action_format,
+        seeds=normalized_seeds,
+        timeout_seconds=normalized_timeout,
+        max_turns=max_turns,
+    )
+    if report_error is not None:
+        return False, report_error
+    environment_name = getattr(report, "environment_name")
+    return True, f"Valid ProofPack V0-V4 positive receipt ({environment_name})"
 
 
 def validate_game_with_proofpack(

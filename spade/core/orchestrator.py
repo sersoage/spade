@@ -126,8 +126,8 @@ async def validate_game_async_with_reason(
     # ProofPack launches eight bounded operations per seed: two clean reset
     # inspections and paired deterministic replays for the oracle, no-agent,
     # and mutation paths. Reserve every per-operation deadline plus startup
-    # overhead, then leave the native in-process smoke check its existing wait
-    # allowance. ProofPack still enforces the hard deadline inside each worker.
+    # overhead. A positive receipt replaces the native in-process smoke check;
+    # ProofPack still enforces the hard deadline inside each worker.
     proofpack_budget = proofpack_timeout_seconds * (seed_count * 8) + 10
     outer_timeout = (
         VALIDATE_GAME_TIMEOUT + proofpack_budget

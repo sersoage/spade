@@ -16,6 +16,7 @@ from spade.core.game_policy import GamePolicy
 from spade.core.proofpack_bridge import (
     proofpack_available,
     validate_game_with_proofpack,
+    validate_positive_proofpack_receipt,
 )
 from spade.core.types import SpadeConfig
 from spade.core.utils.game_files import validate_game, validate_game_with_reason
@@ -105,6 +106,174 @@ def _qualifier_returning(report, calls: list[dict]):
         return report
 
     return qualify_spade_environment
+
+
+def test_public_positive_receipt_validator_accepts_exact_binding() -> None:
+    report = _passing_report(
+        action_format="tool_call",
+        seeds=[7, 11],
+        timeout_seconds=1.25,
+        max_turns=37,
+    )
+
+    passed, reason = validate_positive_proofpack_receipt(
+        report,
+        game_code=VALID_GAME,
+        action_format="tool_call",
+        seeds=[7, 11],
+        timeout_seconds=1.25,
+        max_turns=37,
+    )
+
+    assert passed is True
+    assert reason == "Valid ProofPack V0-V4 positive receipt (MultiTurnEnv)"
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value", "message"),
+    [
+        ("passed", 1, "not marked passed"),
+        ("schema_version", "proofpack-spade-qualification/v1", "schema"),
+        ("environment_digest", "sha256:not-the-source", "source"),
+    ],
+)
+def test_public_positive_receipt_validator_rejects_unbound_report_fields(
+    attribute: str,
+    value: object,
+    message: str,
+) -> None:
+    report = _passing_report()
+    setattr(report, attribute, value)
+
+    passed, reason = validate_positive_proofpack_receipt(
+        report,
+        game_code=VALID_GAME,
+        action_format="boxed",
+        seeds=[0, 1, 42],
+        timeout_seconds=5.0,
+        max_turns=20,
+    )
+
+    assert passed is False
+    assert message in reason
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("missing", "exactly the required V0-V4"),
+        ("extra", "exactly the required V0-V4"),
+        ("mismatched_id", "mismatched identifier"),
+        ("non_pass", "not marked pass"),
+    ],
+)
+def test_public_positive_receipt_validator_requires_exact_passing_clauses(
+    mutation: str,
+    message: str,
+) -> None:
+    report = _passing_report()
+    if mutation == "missing":
+        del report.clauses["v4_mutation_robustness"]
+    elif mutation == "extra":
+        report.clauses["v5_unrequested"] = _Clause("pass", "ok", "v5_unrequested")
+    elif mutation == "mismatched_id":
+        report.clauses["v2_oracle_solvable"].clause_id = "v3_no_agent_unwinnable"
+    else:
+        report.clauses["v2_oracle_solvable"].status = "fail"
+
+    passed, reason = validate_positive_proofpack_receipt(
+        report,
+        game_code=VALID_GAME,
+        action_format="boxed",
+        seeds=[0, 1, 42],
+        timeout_seconds=5.0,
+        max_turns=20,
+    )
+
+    assert passed is False
+    assert message in reason
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("action_format", "boxed", "action_format"),
+        ("seeds", [11, 7], "seeds"),
+        ("max_turns", 38, "max_turns"),
+        ("timeout_seconds", 1.5, "timeout_seconds"),
+        ("execution_boundary", "in-process", "execution_boundary"),
+    ],
+)
+def test_public_positive_receipt_validator_rejects_metadata_mismatch(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    report = _passing_report(
+        action_format="tool_call",
+        seeds=[7, 11],
+        timeout_seconds=1.25,
+        max_turns=37,
+    )
+    report.metadata[field] = value
+
+    passed, reason = validate_positive_proofpack_receipt(
+        report,
+        game_code=VALID_GAME,
+        action_format="tool_call",
+        seeds=[7, 11],
+        timeout_seconds=1.25,
+        max_turns=37,
+    )
+
+    assert passed is False
+    assert message in reason
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("seeds", [True], "seeds"),
+        ("max_turns", True, "max_turns"),
+        ("timeout_seconds", True, "timeout_seconds"),
+    ],
+)
+def test_public_positive_receipt_validator_rejects_boolean_number_spoofs(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    report = _passing_report(seeds=[1], timeout_seconds=1.0, max_turns=1)
+    report.metadata[field] = value
+
+    passed, reason = validate_positive_proofpack_receipt(
+        report,
+        game_code=VALID_GAME,
+        action_format="boxed",
+        seeds=[1],
+        timeout_seconds=1.0,
+        max_turns=1,
+    )
+
+    assert passed is False
+    assert message in reason
+
+
+def test_public_positive_receipt_validator_allows_backward_compatible_metadata() -> None:
+    report = _passing_report()
+    report.metadata["newer_schema_hint"] = "ignored by the v2 validator"
+
+    passed, reason = validate_positive_proofpack_receipt(
+        report,
+        game_code=VALID_GAME,
+        action_format="boxed",
+        seeds=[0, 1, 42],
+        timeout_seconds=5.0,
+        max_turns=20,
+    )
+
+    assert passed is True
+    assert reason == "Valid ProofPack V0-V4 positive receipt (MultiTurnEnv)"
 
 
 def test_bridge_passes_action_seed_timeout_and_multiturn_horizon() -> None:

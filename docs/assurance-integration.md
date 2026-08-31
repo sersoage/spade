@@ -117,26 +117,77 @@ emission has separate registration and operational evidence requirements.
 bundles; it does not aggregate independent clusters and must not be reported as a larger experiment.
 Do not wrap the current command in a shell loop as a substitute for an experiment runner.
 
-A proposed calibration pilot uses 18 independently generated environments: one medium and one hard
-environment for each of SPADE's nine cognitive skills. Each environment is evaluated at the three
-ProofPack-qualified seeds `[0, 1, 42]`, with paired hinted and unhinted episodes from the same
-explicitly pinned `agy` model and a five-turn horizon. The environment is the independent cluster;
-the three seeds are within-environment repetitions. All environments and hints are locked before
-actor rollouts, arm order is counterbalanced, and all 18 clusters feed one Assay decision. Pilot data
-must remain separate from any later confirmatory study.
+A calibration pilot uses 18 separately scheduled, exact-byte-distinct selected environments: one
+medium and one hard environment for each of SPADE's nine cognitive skills. Each environment is
+evaluated at the three ProofPack-qualified seeds `[0, 1, 42]`, with paired hinted and unhinted
+episodes from the same explicitly requested `agy` model route and a five-turn horizon. The
+environment is treated as the independent cluster; the three seeds are within-environment
+repetitions. Exact-byte distinction does not by itself prove causal independence. All environments
+and hints are locked before actor rollouts, arm order is counterbalanced, and all 18 clusters feed
+one Assay decision. Pilot data must remain separate from any later confirmatory study.
 
-That pilot is not supported by the current CLI. Before execution, the runner needs a sealed schedule,
-multi-seed evaluation, deterministic counterbalancing, pre-outcome reserve handling, idempotent
-resume, per-call provenance, a hard invocation cap, and one aggregate Assay write. It must bind the
-schedule, repository revisions, runtime and sandbox details, explicit model request, and all leaf
-artifact digests. The subscription CLI does not expose trustworthy token or cost records, so the
-evidence must not claim them.
+The multi-environment runner implements that protocol. First create a local run-integrity plan. This
+seal is not witnessed preregistration and does not establish release authority:
 
-The 18-cluster design needs at least 180 `agy` invocations and can use substantially more when
-generation retries, hint rewrites, or multi-turn episodes occur. Use a separately authorized pilot
-cap of 450 invocations and stop incomplete if that cap is reached. A confirmatory stage should only
-be sized from the locked pilot variance, receive its own authorization, and never pool pilot
-outcomes. Neither stage can authorize `model.lock` through this integration.
+```bash
+SPADE_AGY_RUN_ROOT="$(pwd)/.assay/spade-experiments/runs"
+"$ASSURANCE_PYTHON" tools/run_spade_agy_experiment.py pilot-plan \
+  --output .assay/spade-experiments/pilot-plan.json \
+  --output-root "$SPADE_AGY_RUN_ROOT" \
+  --experiment-id spade-agy-pilot-v1 \
+  --model '<explicit-agy-model>' \
+  --total-call-cap 450
+```
+
+The generated plan contains 18 analysis clusters and 27 candidate slots, including nine
+same-skill/difficulty hard-stratum reserves that can only be selected before the cohort lock. It
+binds the requested model route, canonical absolute run-output root, source revisions, runner and
+`agy` executable digests, CLI/runtime identity, qualification/evaluation seeds, attempts, timeouts,
+schedules, statistical settings, and call cap. `agy` does not attest the resolved backend model, so
+the plan explicitly records only a requested route.
+
+Validate the plan without creating a run directory, constructing a live `agy` client, or spending a
+provider call:
+
+```bash
+"$ASSURANCE_PYTHON" tools/run_spade_agy_experiment.py run \
+  --plan .assay/spade-experiments/pilot-plan.json \
+  --output-root "$SPADE_AGY_RUN_ROOT"
+```
+
+Execution is deliberately double opt-in. Run this only after separately authorizing the sealed cap:
+
+```bash
+"$ASSURANCE_PYTHON" tools/run_spade_agy_experiment.py run \
+  --plan .assay/spade-experiments/pilot-plan.json \
+  --output-root "$SPADE_AGY_RUN_ROOT" \
+  --execute \
+  --acknowledge-call-cap 450
+```
+
+The canonical output root is part of the plan digest and an alternate root is rejected before live
+dependencies or calls are reached. Within that sealed root, the run directory is derived from the
+experiment ID and plan digest. A single-writer lock, conflict-checked call reservations/results,
+execution-start runtime/source checks, deterministic assignments, and semantic environment replay
+make completed leaves resumable.
+An invocation reserved before a crash but lacking a durable result is charged and treated as
+ambiguous; it is never silently replayed. Every `agy` call uses a fresh empty temporary directory.
+Nested symlinks are rejected. Only a complete cohort and outcome schedule can reach the sole
+aggregate Assay write, whose full artifact subtree is inventoried and revalidated on resume.
+
+This is a local integrity protocol, not an external uniqueness or preregistration witness. An
+operator who controls the filesystem can create and reseal a different plan/root, remove prior local
+state, or copy artifacts outside this protocol. Publish or witness the plan digest before a
+confirmatory run, and route any release claim through Assay's `assay-experiment/v1` registration and
+authorization controls. The calibration pilot itself never authorizes release.
+
+The 18-cluster design needs at least 180 `agy` CLI launches and can use substantially more when
+generation retries, hint rewrites, reserve selection, or multi-turn episodes occur; the sealed
+protocol maximum is 783 CLI launches. The 450 limit is a hard cap for the plan's sealed local run
+root, not a token, cost, or backend-request claim. The runner stops incomplete if the cap is reached
+and never sends a favorable subset to Assay. This pilot has not been launched. A confirmatory stage
+should only be sized from the locked pilot variance, receive its own authorization, and never pool
+pilot outcomes. Neither stage can authorize `model.lock` through this integration.
 
 ## Verification
 
@@ -146,8 +197,10 @@ Run the focused SPADE integration tests from this repository:
 python -m pytest -q \
   tests/test_proofpack_bridge.py \
   tests/test_game_utils.py \
-  tests/test_live_spade_eval.py
+  tests/test_live_spade_eval.py \
+  tests/test_spade_agy_experiment.py
 python tools/run_live_spade_eval.py --help
+python tools/run_spade_agy_experiment.py --help
 ```
 
 ProofPack and Assay maintain their own focused suites and repository-level `make verify` commands.
