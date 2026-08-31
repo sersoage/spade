@@ -7,32 +7,26 @@ import re
 def extract_boxed_answer(solution: str) -> str | None:
     if not solution:
         return None
-    patterns = [
-        r"\\boxed\{([^{}]+)\}",
-        r"\\boxed\{\{([^{}]+)\}\}",
-        r"\\boxed\{\{\{([^{}]+)\}\}\}",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, solution)
-        if match:
-            return match.group(1).strip()
-
-    boxed_index = solution.rfind("\\boxed")
-    start = solution.find("{", boxed_index) if boxed_index >= 0 else -1
-    if start < 0:
-        return None
-    depth = 0
-    for index in range(start, len(solution)):
-        if solution[index] == "{":
-            depth += 1
-        elif solution[index] == "}":
-            depth -= 1
-            if depth == 0:
-                content = solution[start + 1 : index].strip()
-                for _ in range(2):
-                    if content.startswith("{") and content.endswith("}"):
-                        content = content[1:-1].strip()
-                return content
+    # Models may mention a candidate answer during reasoning before emitting
+    # their final answer. Parse balanced braces from the *last* \boxed marker so
+    # nested LaTeX (for example \frac{1}{2}) and final-answer semantics both work.
+    boxed_positions = [match.start() for match in re.finditer(r"\\boxed", solution)]
+    for boxed_index in reversed(boxed_positions):
+        start = solution.find("{", boxed_index + len("\\boxed"))
+        if start < 0:
+            continue
+        depth = 0
+        for index in range(start, len(solution)):
+            if solution[index] == "{":
+                depth += 1
+            elif solution[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    content = solution[start + 1 : index].strip()
+                    for _ in range(2):
+                        if content.startswith("{") and content.endswith("}"):
+                            content = content[1:-1].strip()
+                    return content
     return None
 
 
@@ -73,10 +67,51 @@ def extract_command(raw_action: str) -> str | None:
 
 
 def parse_action(raw_action: str, action_format: str = "boxed") -> str:
-    if action_format in ("tool_call", "command"):
-        return raw_action.strip()
-    extracted = extract_boxed_answer(raw_action)
-    return f"\\boxed{{{extracted}}}" if extracted else raw_action.strip()
+    """Extract the final visible action while preserving environment wrappers.
+
+    Multi-turn models commonly emit hidden ``<think>`` text and may mention an
+    earlier candidate action. The environment should receive the final visible
+    boxed/tagged action, not the complete reasoning transcript.
+    """
+    if not isinstance(raw_action, str):
+        raw_action = str(raw_action)
+    visible = raw_action.rsplit("</think>", 1)[-1].strip()
+
+    if action_format == "boxed":
+        extracted = extract_boxed_answer(visible)
+        return f"\\boxed{{{extracted}}}" if extracted is not None else visible
+
+    if action_format == "tool_call":
+        matches = list(
+            re.finditer(
+                r"<(tool_call|answer)>(.*?)</\1>",
+                visible,
+                re.DOTALL | re.IGNORECASE,
+            )
+        )
+        if not matches:
+            return visible
+        match = matches[-1]
+        tag = match.group(1).lower()
+        return f"<{tag}>{match.group(2).strip()}</{tag}>"
+
+    if action_format == "command":
+        matches = list(
+            re.finditer(
+                r"<(command|answer)>(.*?)</\1>",
+                visible,
+                re.DOTALL | re.IGNORECASE,
+            )
+        )
+        if not matches:
+            return visible
+        match = matches[-1]
+        tag = match.group(1).lower()
+        return f"<{tag}>{match.group(2).strip()}</{tag}>"
+
+    raise ValueError(
+        f"Unsupported action_format={action_format!r}; expected 'boxed', 'tool_call', or 'command'"
+    )
 
 
 def repair_fstring_braces(code: str, max_iter: int = 20) -> str:

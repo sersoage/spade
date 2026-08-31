@@ -10,13 +10,14 @@ import os
 import random
 import sys
 from pathlib import Path
+from typing import Any
 
 from tqdm.asyncio import tqdm
 
 # Add project root to path
 sys.path.append('.')
 
-from spade.core.proofpack_bridge import validate_game_with_proofpack
+from spade.core.proofpack_bridge import proofpack_available, validate_game_with_proofpack
 from spade.core.game_generator import SyntheticGameGenerator
 from spade.core.envs.synthetic_game_env import make_synthetic_env
 
@@ -26,6 +27,9 @@ def test_game_difficulty(
     num_test_runs: int = 20,
     num_guesses_per_run: int = 5,
     max_success_rate: float = 0.15,
+    *,
+    max_turns: int = 20,
+    proofpack_target: Any | None = None,
 ) -> tuple[bool, float]:
     """
     Test if a game has appropriate difficulty by trying random guesses.
@@ -39,19 +43,37 @@ def test_game_difficulty(
     Returns:
         (is_valid, success_rate): Whether difficulty is appropriate and the actual success rate
     """
-    env = make_synthetic_env(game_file)
     successes = 0
-
-    for run in range(num_test_runs):
-        env.reset(seed=run)
-        for _ in range(num_guesses_per_run):
-            random_answer = str(random.randint(1, 100))
-            obs, reward, terminated, truncated, info = env.step(f'\\boxed{{{random_answer}}}')
-            if reward > 0:
-                successes += 1
-                break
-            if terminated or truncated:
-                break
+    native_env = None
+    try:
+        if proofpack_target is None:
+            native_env = make_synthetic_env(
+                game_file,
+                max_turns=max_turns,
+                respect_game_max_turns=True,
+            )
+        for run in range(num_test_runs):
+            env = proofpack_target.instantiate() if proofpack_target is not None else native_env
+            try:
+                env.reset(seed=run)
+                for _ in range(min(num_guesses_per_run, max_turns)):
+                    random_answer = str(random.randint(1, 100))
+                    _, reward, terminated, truncated, _ = env.step(
+                        f'\\boxed{{{random_answer}}}'
+                    )
+                    if reward > 0:
+                        successes += 1
+                        break
+                    if terminated or truncated:
+                        break
+            finally:
+                if proofpack_target is not None:
+                    close = getattr(env, "close", None)
+                    if callable(close):
+                        close()
+    finally:
+        if native_env is not None:
+            native_env.close()
 
     success_rate = successes / num_test_runs
     is_valid = success_rate <= max_success_rate
@@ -68,6 +90,10 @@ async def generate_and_validate_game_async(
     max_attempts: int = 5,
     test_difficulty: bool = True,
     max_success_rate: float = 0.15,
+    use_proofpack_qualification: bool = False,
+    proofpack_seeds: list[int] | None = None,
+    proofpack_timeout_seconds: float = 5.0,
+    max_turns: int = 20,
 ) -> tuple[str, bool]:
     """
     Generate and validate a single game with retries (async version).
@@ -81,6 +107,10 @@ async def generate_and_validate_game_async(
         max_attempts: Maximum number of generation attempts
         test_difficulty: Whether to test difficulty with random guesses
         max_success_rate: Maximum acceptable random success rate
+        use_proofpack_qualification: Require the optional ProofPack V0-V4 gate
+        proofpack_seeds: Deterministic seeds used by the ProofPack gate
+        proofpack_timeout_seconds: Per-execution ProofPack timeout
+        max_turns: Rollout horizon used by ProofPack's multi-turn oracle
 
     Returns:
         (skill, success): Tuple of skill name and whether generation succeeded
@@ -100,20 +130,49 @@ async def generate_and_validate_game_async(
                 lambda: generator.generate_game(skill, difficulty=difficulty)
             )
 
-            print(f'[{skill_idx+1}]   Running ProofPack V0-V4 formal qualification ladder...')
-            is_valid, reason = validate_game_with_proofpack(game_spec.code)
-            if not is_valid:
-                print(f'[{skill_idx+1}]   ✗ ProofPack rejected game: {reason}')
-                raise ValueError(f'ProofPack qualification failed: {reason}')
-            print(f'[{skill_idx+1}]   ✓ ProofPack certified: {reason}')
+            proofpack_target = None
+            if use_proofpack_qualification:
+                print(f'[{skill_idx+1}]   Running ProofPack V0-V4 formal qualification ladder...')
+                is_valid, reason = validate_game_with_proofpack(
+                    game_spec.code,
+                    seeds=proofpack_seeds,
+                    timeout_seconds=proofpack_timeout_seconds,
+                    max_turns=max_turns,
+                )
+                if not is_valid:
+                    print(f'[{skill_idx+1}]   ✗ ProofPack rejected game: {reason}')
+                    raise ValueError(f'ProofPack qualification failed: {reason}')
+                print(f'[{skill_idx+1}]   ✓ ProofPack qualified: {reason}')
+                # Reuse ProofPack's replay-backed proxy for the remaining
+                # generation-time probes. Candidate code never executes in this
+                # process merely because the assurance gate was enabled.
+                from proofpack_env.spade_target import SpadeEnvironmentTarget
+
+                proofpack_target = SpadeEnvironmentTarget(
+                    game_spec.code,
+                    action_format="boxed",
+                    max_turns=max_turns,
+                    operation_timeout_seconds=proofpack_timeout_seconds,
+                )
 
             generator.save_game(game_spec, game_file)
             print(f'[{skill_idx+1}]   ✓ Saved to {game_file}')
             print(f'[{skill_idx+1}]   Game name: {game_spec.game_name}')
 
             print(f'[{skill_idx+1}]   Testing game can be loaded...')
-            env = make_synthetic_env(game_file)
-            obs, info = env.reset()
+            env = (
+                proofpack_target.instantiate()
+                if proofpack_target is not None
+                else make_synthetic_env(
+                    game_file,
+                    max_turns=max_turns,
+                    respect_game_max_turns=True,
+                )
+            )
+            try:
+                obs, info = env.reset()
+            finally:
+                env.close()
             obs_preview = obs[:100] + '...' if len(obs) > 100 else obs
             print(f'[{skill_idx+1}]   ✓ Reset successful. Initial obs: {obs_preview}')
 
@@ -124,6 +183,8 @@ async def generate_and_validate_game_async(
                     num_test_runs=20,
                     num_guesses_per_run=5,
                     max_success_rate=max_success_rate,
+                    max_turns=max_turns,
+                    proofpack_target=proofpack_target,
                 )
 
                 print(f'[{skill_idx+1}]   Random success rate: {success_rate:.1%} (threshold: {max_success_rate:.1%})')
@@ -225,8 +286,47 @@ async def main_async():
         default=0.15,
         help='Maximum acceptable random success rate (default: 0.15 = 15%%)'
     )
+    parser.add_argument(
+        '--use_proofpack_qualification',
+        action='store_true',
+        help=(
+            'Require ProofPack V0-V4 qualification. Fails closed if a compatible '
+            'proofpack_env installation is unavailable.'
+        ),
+    )
+    parser.add_argument(
+        '--proofpack_seeds',
+        type=int,
+        nargs='+',
+        default=[0, 1, 42],
+        help='Seeds used by ProofPack qualification (default: 0 1 42)',
+    )
+    parser.add_argument(
+        '--proofpack_timeout_seconds',
+        type=float,
+        default=5.0,
+        help='Per-execution ProofPack timeout in seconds (default: 5)',
+    )
+    parser.add_argument(
+        '--max_turns',
+        type=int,
+        default=20,
+        help='Maximum rollout horizon used during ProofPack qualification (default: 20)',
+    )
 
     args = parser.parse_args()
+
+    if args.use_proofpack_qualification:
+        available, detail = proofpack_available()
+        if not available:
+            parser.error(
+                "ProofPack qualification was requested, but a compatible "
+                f"proofpack_env installation is unavailable: {detail}"
+            )
+        print(
+            "ProofPack isolates qualification replays only; accepted games are "
+            "loaded in-process by SPADE's native runtime."
+        )
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -287,6 +387,10 @@ async def main_async():
             max_attempts=args.max_attempts,
             test_difficulty=not args.skip_difficulty_test,
             max_success_rate=args.max_success_rate,
+            use_proofpack_qualification=args.use_proofpack_qualification,
+            proofpack_seeds=args.proofpack_seeds,
+            proofpack_timeout_seconds=args.proofpack_timeout_seconds,
+            max_turns=args.max_turns,
         )
         tasks.append(task)
 

@@ -28,7 +28,9 @@ class SyntheticGameAdapter(EnvironmentAdapter):
         games_dir: Directory containing game_*.py files
     """
 
-    def __init__(self, games_dir: str):
+    def __init__(self, games_dir: str, *, max_turns: int = 20):
+        if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns <= 0:
+            raise ValueError("max_turns must be a positive integer")
         self._games_dir = Path(games_dir)
         if not self._games_dir.is_dir():
             raise ValueError(f"Games directory does not exist: {games_dir}")
@@ -39,6 +41,7 @@ class SyntheticGameAdapter(EnvironmentAdapter):
 
         # Use absolute path strings as env IDs
         self._env_ids = [str(f) for f in self._game_files]
+        self._max_turns = max_turns
         self._blacklisted: Set[str] = set()
         logger.info(
             "[SYNTHETIC] Loaded %d game files from %s",
@@ -74,7 +77,14 @@ class SyntheticGameAdapter(EnvironmentAdapter):
             raise RuntimeError(f"Game is blacklisted: {Path(env_id).name}")
 
         try:
-            env = _run_with_alarm(lambda: make_synthetic_env(env_id), ENV_CALL_TIMEOUT_SEC)
+            env = _run_with_alarm(
+                lambda: make_synthetic_env(
+                    env_id,
+                    max_turns=self._max_turns,
+                    respect_game_max_turns=True,
+                ),
+                ENV_CALL_TIMEOUT_SEC,
+            )
         except Exception:
             self.blacklist(env_id)
             raise
@@ -87,7 +97,11 @@ class SyntheticGameAdapter(EnvironmentAdapter):
             category="synthetic",
             difficulty=1,
             source="synthetic",
-            metadata={"game_file": env_id, "game_name": game_name},
+            metadata={
+                "game_file": env_id,
+                "game_name": game_name,
+                "max_turns": self._max_turns,
+            },
         )
 
     def get_difficulty_range(self, env_id: str) -> Tuple[int, int]:

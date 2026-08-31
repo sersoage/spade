@@ -121,6 +121,29 @@ def add_spade_arguments(parser):
              "<games_dir>/rejected/ for inspection (otherwise discarded).",
     )
     spade_args.add_argument(
+        "--spade-use-proofpack-qualification",
+        action="store_true",
+        default=False,
+        help=(
+            "Require ProofPack V0-V4 qualification for every newly generated game. "
+            "This is opt-in because proofpack-env requires Python >=3.12; once "
+            "enabled, a missing/incompatible installation rejects the game."
+        ),
+    )
+    spade_args.add_argument(
+        "--spade-proofpack-seeds",
+        type=int,
+        nargs="+",
+        default=[0, 1, 42],
+        help="Seeds used by ProofPack qualification (default: 0 1 42).",
+    )
+    spade_args.add_argument(
+        "--spade-proofpack-timeout-seconds",
+        type=float,
+        default=5.0,
+        help="Per-execution ProofPack timeout in seconds (default: 5).",
+    )
+    spade_args.add_argument(
         "--spade-max-turns",
         type=int,
         default=50,

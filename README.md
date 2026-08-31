@@ -115,29 +115,54 @@ python -m eval_offline.render_table --help
 
 The runner needs the `[eval]` extra and per-benchmark data setup; both, plus the benchmark matrix, are documented in [`eval_offline/README.md`](eval_offline/README.md). `eval_configs/` is separate: those YAML files drive the in-loop evaluations the training launchers run during a job.
 
-## ProofPack Qualification & Assay Certification
+## ProofPack Qualification & Assay Evidence
 
-SPADE integrates with **ProofPack** (for $0 fail-closed environment qualification) and **Assay** (for autocurriculum benchmark emission and cluster-robust statistical model promotion):
+SPADE has an optional assurance path for generated cognitive and tool-use environments:
 
-* **ProofPack $V0-V4$ Qualification**: [`spade/core/proofpack_bridge.py`](spade/core/proofpack_bridge.py) audits generated Gym environments against syntax/AST checks, multi-seed resets, Oracle solvability ($r_{\text{oracle}} = 1.0$), and no-agent baselines ($r_{\text{no-op}} = 0.0$).
-* **Assay Statistics Spine**: Trajectories are ingested into Evidence Schema v2, and candidate models are evaluated using Intra-Cluster Correlation (ICC) and cluster-robust standard errors (`clustered_se`) before binding releases in `model.lock`.
+* **ProofPack V0–V4 qualification** checks source policy, deterministic multi-seed reset,
+  oracle solvability, a no-agent control, and a planted invalid action. Enable it with
+  `SpadeConfig(use_proofpack_qualification=True)`. A requested gate fails closed when a
+  compatible ProofPack install or its OS isolation backend is unavailable.
+* **Assay persistence and decision support** writes a content-addressed curriculum manifest,
+  observations, a statistical decision, and Evidence Schema v2 dependence records. Assay
+  requires at least four declared independent environment clusters and identified uncertainty
+  before reporting a positive statistical signal. That signal is not release approval; a real
+  `model.lock` has additional registration and operational-evidence gates.
+
+SPADE itself remains compatible with Python 3.10+. The optional ProofPack and Assay packages
+require Python 3.12+, so use a Python 3.12 environment for the assurance path. Qualification is
+isolated; SPADE's ordinary training environment runtime remains a separate, trusted native-code
+boundary. See [the assurance guide](docs/assurance-integration.md) for configuration, threat
+boundaries, artifact schemas, and verification commands.
 
 ### Live Evaluation Runner
 
-You can run an end-to-end live evaluation (Designer synthesis $\rightarrow$ ProofPack qualification $\rightarrow$ Hint generation $\rightarrow$ Dual-lane agent rollouts $\rightarrow$ Assay manifest emission) with zero API keys using your Google Antigravity (`agy`) CLI:
+The live smoke performs designer synthesis, isolated ProofPack qualification, observation-only
+hint generation, paired multi-turn rollouts, and native Assay artifact persistence. With one
+environment it is deliberately evidence-producing but non-promotional: the expected decision is
+`insufficient_clusters`, and no `model.lock` is emitted.
 
 ```bash
-# Run with Google CLI subscription (zero API keys)
-python3 tools/run_live_spade_eval.py \
-  --provider agy \
-  --skill "Graph Theory & Shortest Path"
+# ASSURANCE_PYTHON must be a Python 3.12 environment with both proofpack-env
+# and assay (including their runtime dependencies) installed.
+ASSURANCE_PYTHON=/path/to/assurance-venv/bin/python
 
-# Or run with OpenRouter / OpenAI
-python3 tools/run_live_spade_eval.py \
+# Uses the existing Google Antigravity CLI subscription; no API key is copied.
+"$ASSURANCE_PYTHON" tools/run_live_spade_eval.py \
+  --provider agy \
+  --skill "Graph Theory and Shortest Path"
+
+# OpenAI-compatible providers are also supported with an explicit key or --env-file.
+"$ASSURANCE_PYTHON" tools/run_live_spade_eval.py \
   --provider openrouter \
   --model deepseek/deepseek-chat \
-  --skill "Combinatorial Knapsack & Dynamic Programming"
+  --skill "Combinatorial Knapsack and Dynamic Programming"
 ```
+
+Every run receives its own directory under `.assay/spade-live/`, including the generated source,
+ProofPack receipt, complete paired trace, Assay manifest, decision, certification, and Evidence v2
+ledger. The manifest binds the receipt and trace digests. The CLI returns nonzero on dependency,
+generation, qualification, leakage, rollout, or persistence failure.
 
 ## Tinker Training
 

@@ -31,7 +31,11 @@ logger = logging.getLogger(__name__)
 _FIXED_ENV_ORCHESTRATOR = None
 
 
-def _parse_env_sources(source_specs: List[str]) -> List[EnvironmentAdapter]:
+def _parse_env_sources(
+    source_specs: List[str],
+    *,
+    max_turns: int = 20,
+) -> List[EnvironmentAdapter]:
     """Parse --spade-fixed-env-source specs into environment adapters.
 
     Formats:
@@ -68,7 +72,7 @@ def _parse_env_sources(source_specs: List[str]) -> List[EnvironmentAdapter]:
             gem_tasks.append(task_id)
         elif spec.startswith("game_file:"):
             games_dir = spec[len("game_file:"):]
-            adapter = SyntheticGameAdapter(games_dir=games_dir)
+            adapter = SyntheticGameAdapter(games_dir=games_dir, max_turns=max_turns)
             adapters.append(adapter)
             logger.info(
                 "[FIXED-ENV] Synthetic game adapter: %d games from %s",
@@ -260,6 +264,9 @@ def _pre_generate_games(args: Namespace) -> SyntheticGameAdapter:
         actor_top_p=args.spade_actor_top_p,
         actor_top_k=args.spade_actor_top_k,
         actor_max_tokens=args.spade_actor_max_tokens,
+        use_proofpack_qualification=args.spade_use_proofpack_qualification,
+        proofpack_seeds=args.spade_proofpack_seeds,
+        proofpack_timeout_seconds=args.spade_proofpack_timeout_seconds,
         max_turns=args.spade_max_turns,
         max_context_length=args.spade_max_context_length,
         gamma=args.spade_gamma,
@@ -312,7 +319,10 @@ def _pre_generate_games(args: Namespace) -> SyntheticGameAdapter:
             "Check model and generation settings."
         )
 
-    return SyntheticGameAdapter(games_dir=str(games_dir))
+    return SyntheticGameAdapter(
+        games_dir=str(games_dir),
+        max_turns=args.spade_max_turns,
+    )
 
 
 def _get_orchestrator(args: Namespace) -> FixedEnvOrchestrator:
@@ -333,7 +343,10 @@ def _get_orchestrator(args: Namespace) -> FixedEnvOrchestrator:
         )
     else:
         # Parse env sources from --spade-fixed-env-source
-        adapters = _parse_env_sources(args.spade_fixed_env_source)
+        adapters = _parse_env_sources(
+            args.spade_fixed_env_source,
+            max_turns=args.spade_max_turns,
+        )
 
     if not adapters:
         raise ValueError(

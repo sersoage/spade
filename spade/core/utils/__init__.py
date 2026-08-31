@@ -62,6 +62,10 @@ _EXPORTS = {
     ),
     "validate_boxed_format": ("spade.core.utils.parsing", "validate_boxed_format"),
     "validate_game": ("spade.core.utils.game_files", "validate_game"),
+    "validate_game_with_reason": (
+        "spade.core.utils.game_files",
+        "validate_game_with_reason",
+    ),
 }
 
 __all__ = list(_EXPORTS)

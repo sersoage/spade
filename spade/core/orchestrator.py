@@ -12,6 +12,7 @@ Architecture:
 
 import asyncio
 import concurrent.futures
+import functools
 import logging
 import math
 import os
@@ -55,7 +56,7 @@ from spade.core.game_generator import SyntheticGameGenerator
 from spade.core.utils import (
     get_token_delta,
     parse_action,
-    validate_game,
+    validate_game_with_reason,
     save_game_file,
     save_rejected_game,
     extract_game_code,
@@ -78,37 +79,79 @@ from spade.core.batched import (
 from spade.core.hint_generator import HintGenerator, SelfHintGenerator
 from spade.core.openrouter_adapter import create_openai_adapter
 from spade.core.env_validator import EnvironmentValidator
+from spade.core.proofpack_bridge import proofpack_available
 import numpy as np
 logger = logging.getLogger(__name__)
 
-# validate_game() runs the generated game's reset()/step() — give it longer than
-# ENV_STEP_TIMEOUT since validation replays several steps back-to-back.
+# Native validation runs the generated game's reset()/step() — give it longer
+# than ENV_STEP_TIMEOUT since validation replays several steps back-to-back.
 VALIDATE_GAME_TIMEOUT = 60  # seconds — legit games validate in <1s; this only bounds hangs
 
 
-async def validate_game_async(game_file) -> bool:
-    """Run validate_game() in a thread with a hard timeout.
+async def validate_game_async_with_reason(
+    game_file,
+    *,
+    validate_runtime: bool = True,
+    proofpack_enabled: bool = False,
+    action_format: str = "boxed",
+    proofpack_seeds: Optional[List[int]] = None,
+    proofpack_timeout_seconds: float = 5.0,
+    max_turns: int = 20,
+) -> Tuple[bool, str]:
+    """Run generated-game validation off the event loop with a wait deadline.
 
-    validate_game() is sync and runs the generated game's reset()/step()
+    Native validation is synchronous and runs the generated game's reset()/step()
     calls. If the proposer produces a game with an infinite loop in those
-    methods, calling validate_game() directly inside an async function
+    methods, calling it directly inside an async function
     blocks the entire event loop — preventing outer asyncio.wait_for
-    timers from firing. Wrapping it in run_in_executor isolates it on a
-    thread; the asyncio.wait_for here aborts after VALIDATE_GAME_TIMEOUT
-    so the rollout never stalls on a single bad game.
+    timers from firing. ``run_in_executor`` moves that work to a thread; it is
+    not a security boundary and cancelling the await cannot kill generated
+    code already running in that thread. The deadline only lets the rollout
+    stop waiting for the result.
     """
     loop = asyncio.get_event_loop()
+    validation_call = functools.partial(
+        validate_game_with_reason,
+        game_file,
+        validate_runtime=validate_runtime,
+        proofpack_enabled=proofpack_enabled,
+        action_format=action_format,
+        proofpack_seeds=proofpack_seeds,
+        proofpack_timeout_seconds=proofpack_timeout_seconds,
+        max_turns=max_turns,
+    )
+    # Keep the outer deadline aligned with the bridge's public default. Passing
+    # ``None`` asks ProofPack to qualify seeds [0, 1, 42], not a single seed.
+    seed_count = 3 if proofpack_seeds is None else max(len(proofpack_seeds), 1)
+    # ProofPack launches eight bounded operations per seed: two clean reset
+    # inspections and paired deterministic replays for the oracle, no-agent,
+    # and mutation paths. Reserve every per-operation deadline plus startup
+    # overhead, then leave the native in-process smoke check its existing wait
+    # allowance. ProofPack still enforces the hard deadline inside each worker.
+    proofpack_budget = proofpack_timeout_seconds * (seed_count * 8) + 10
+    outer_timeout = (
+        VALIDATE_GAME_TIMEOUT + proofpack_budget
+        if proofpack_enabled
+        else VALIDATE_GAME_TIMEOUT
+    )
     try:
         return await asyncio.wait_for(
-            loop.run_in_executor(_ENV_STEP_EXECUTOR, validate_game, game_file),
-            timeout=VALIDATE_GAME_TIMEOUT,
+            loop.run_in_executor(_ENV_STEP_EXECUTOR, validation_call),
+            timeout=outer_timeout,
         )
     except asyncio.TimeoutError:
-        logger.warning(
-            f"validate_game timed out after {VALIDATE_GAME_TIMEOUT}s on "
-            f"{getattr(game_file, 'name', game_file)} — treating as invalid"
+        reason = (
+            f"Game validation timed out after {outer_timeout:.1f}s on "
+            f"{getattr(game_file, 'name', game_file)}"
         )
-        return False
+        logger.warning("%s — treating as invalid", reason)
+        return False, reason
+
+
+async def validate_game_async(game_file, **kwargs) -> bool:
+    """Compatibility wrapper returning only the async validation verdict."""
+    passed, _ = await validate_game_async_with_reason(game_file, **kwargs)
+    return passed
 
 
 class SpadeOrchestrator:
@@ -144,6 +187,19 @@ class SpadeOrchestrator:
         self.learning_potentials = learning_potentials
         self.game_policy = game_policy
         self.env_memory = env_memory
+
+        if config.use_proofpack_qualification:
+            available, detail = proofpack_available()
+            if not available:
+                raise RuntimeError(
+                    "ProofPack qualification is enabled but unavailable; refusing "
+                    f"to generate environments. {detail}"
+                )
+            logger.warning(
+                "[PROOFPACK] Qualification replays are OS-isolated, but accepted "
+                "game code still executes in the SPADE trainer process during "
+                "native training/playback rollouts."
+            )
 
         # Per-role chat template kwargs overrides (e.g., enable_thinking)
         self._env_template_kwargs = (
@@ -239,6 +295,40 @@ class SpadeOrchestrator:
             self._env_validator_accepted = 0
             self._env_validator_rejected = 0
             self._env_validator_errors = 0
+
+        # Per-rollout deterministic assurance counters. These are separate from
+        # the optional LLM validator so operators can distinguish formal gate
+        # failures from semantic-judge rejections.
+        self._proofpack_accepted = 0
+        self._proofpack_rejected = 0
+
+    async def _validate_generated_game(
+        self,
+        game_file: Path,
+        *,
+        validate_runtime: bool,
+    ) -> Tuple[bool, str]:
+        """Apply configured native and ProofPack gates to generated source."""
+        proofpack_enabled = self.config.use_proofpack_qualification
+        if not validate_runtime and not proofpack_enabled:
+            return True, "Generated-game validation disabled"
+
+        passed, reason = await validate_game_async_with_reason(
+            game_file,
+            validate_runtime=validate_runtime,
+            proofpack_enabled=proofpack_enabled,
+            action_format=self.config.action_format,
+            proofpack_seeds=self.config.proofpack_seeds,
+            proofpack_timeout_seconds=self.config.proofpack_timeout_seconds,
+            max_turns=self.config.max_turns,
+        )
+        if proofpack_enabled:
+            if passed:
+                self._proofpack_accepted += 1
+            else:
+                self._proofpack_rejected += 1
+        return passed, reason
+
     # =========================================================================
     # ASYNC CORE - Primary implementations (Slime/Tinker backends)
     # =========================================================================
@@ -1133,15 +1223,31 @@ class SpadeOrchestrator:
                     game_code, games_dir, rollout_id, index, skill
                 )
 
-                # Validation is executor-bounded because generated code may hang.
-                if validate and not await validate_game_async(game_file):
-                    raise RuntimeError("Game validation failed")
+                # Validation is executor-bounded because generated code may
+                # hang. Explicit ProofPack assurance remains mandatory even if
+                # a caller disables the legacy native runtime smoke check.
+                is_valid, validation_reason = await self._validate_generated_game(
+                    game_file,
+                    validate_runtime=validate,
+                )
+                if not is_valid:
+                    self._persist_rejected(
+                        games_dir,
+                        rollout_id,
+                        index,
+                        skill,
+                        game_code,
+                        validation_reason,
+                        attempt,
+                    )
+                    raise RuntimeError(f"Game validation failed: {validation_reason}")
 
                 # Reject criteria that raise at reset for every tested seed.
                 # Rollout zero skips this opt-in gate because no fallback exists yet.
                 _reset_gate_on = (
                     os.environ.get("SPADE_RESET_GATE", "") not in ("", "0", "false", "False")
                     and rollout_id > 0
+                    and not self.config.use_proofpack_qualification
                 )
                 if _reset_gate_on and criteria_throw_at_reset(str(game_file), self.config.max_turns):
                     self._env_validator_rejected += 1
@@ -1252,8 +1358,16 @@ class SpadeOrchestrator:
     ) -> Tuple[bool, str]:
         """Validate a generated game; return (is_valid, error_message). The error
         is fed back to the proposer for repair, so make it specific."""
-        if validate and not await validate_game_async(game_file):
-            # Pin down a useful reason for the repair feedback.
+        is_valid, validation_reason = await self._validate_generated_game(
+            game_file,
+            validate_runtime=validate,
+        )
+        if not is_valid:
+            # Preserve the ProofPack clause/runtime reason for repair feedback.
+            # If an older native validator somehow returns no detail, retain the
+            # historical syntax/interface diagnosis as a defensive fallback.
+            if validation_reason:
+                return False, validation_reason
             try:
                 compile(game_code, "<game>", "exec")
                 err = ("the game raised at reset()/step() or has a broken interface "
@@ -2304,6 +2418,8 @@ class SpadeOrchestrator:
             # Reset env validator counters for this rollout
             self._env_validator_accepted = 0
             self._env_validator_rejected = 0
+            self._proofpack_accepted = 0
+            self._proofpack_rejected = 0
 
             generate_games_func = self.generate_games if mode != "batched" else generate_games_batched
             new_files, new_env_trajs = generate_games_func(
@@ -2331,6 +2447,17 @@ class SpadeOrchestrator:
             # Fraction of requested games that passed validation; a declining
             # pass-rate signals the proposer collapsing into invalid game code.
             info["env_validation_pass_rate"] = len(new_files) / max(num_to_generate, 1)
+
+            if self.config.use_proofpack_qualification and mode != "batched":
+                assurance_total = self._proofpack_accepted + self._proofpack_rejected
+                info["proofpack/accepted"] = self._proofpack_accepted
+                info["proofpack/rejected"] = self._proofpack_rejected
+                info["proofpack/total_checked"] = assurance_total
+                info["proofpack/rejection_rate"] = (
+                    self._proofpack_rejected / assurance_total
+                    if assurance_total > 0
+                    else 0.0
+                )
 
             # Log env validator metrics
             if self.env_validator is not None:

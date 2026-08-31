@@ -25,7 +25,6 @@ from spade.core.prompts.tool_use_template import (
     get_env_gen_prompt_fn,
 )
 from spade.core.types import SpadeConfig, Trajectory
-from spade.core.orchestrator import validate_game_async
 from spade.core.utils import (
     build_env_trajectory,
     extract_game_code,
@@ -142,14 +141,28 @@ class CorpusGroundedOrchestrator(SpadeOrchestrator):
                     game_code, games_dir, rollout_id, index, skill
                 )
 
-                if validate and not await validate_game_async(game_file):
-                    raise RuntimeError("Game validation failed")
+                is_valid, validation_reason = await self._validate_generated_game(
+                    game_file,
+                    validate_runtime=validate,
+                )
+                if not is_valid:
+                    self._persist_rejected(
+                        games_dir,
+                        rollout_id,
+                        index,
+                        skill,
+                        game_code,
+                        validation_reason,
+                        attempt,
+                    )
+                    raise RuntimeError(f"Game validation failed: {validation_reason}")
 
                 # Optional gate for criteria that fail on every tested reset state.
                 # Rollout zero skips it because no fallback pool exists yet.
                 _reset_gate_on = (
                     os.environ.get("SPADE_RESET_GATE", "") not in ("", "0", "false", "False")
                     and rollout_id > 0
+                    and not self.config.use_proofpack_qualification
                 )
                 if _reset_gate_on and criteria_throw_at_reset(str(game_file), self.config.max_turns):
                     self._env_validator_rejected += 1

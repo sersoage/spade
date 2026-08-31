@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from spade.core.envs.synthetic_game_env import make_synthetic_env
 from spade.core.learning_potential import GameBaselineTracker
 from spade.core.types import Trajectory, TrajectoryStatus
 from spade.core.utils.game_utils import (
@@ -46,8 +47,22 @@ def test_boxed_answer_extraction(text: str, expected: str | None) -> None:
 
 def test_action_parsing() -> None:
     assert parse_action(r"reasoning \boxed{7}") == r"\boxed{7}"
+    assert parse_action(r"candidate \boxed{3}; final \boxed{7}") == r"\boxed{7}"
+    assert parse_action(
+        r"<think>candidate \boxed{3}</think> final \boxed{7}"
+    ) == r"\boxed{7}"
     assert parse_action("  raw  ", "tool_call") == "raw"
+    assert parse_action(
+        '<think>plan</think> prose <tool_call> {"name":"x"} </tool_call>',
+        "tool_call",
+    ) == '<tool_call>{"name":"x"}</tool_call>'
+    assert parse_action(
+        '<tool_call>{"name":"x"}</tool_call> then <answer> done </answer>',
+        "tool_call",
+    ) == "<answer>done</answer>"
     assert parse_action("  raw  ", "command") == "raw"
+    with pytest.raises(ValueError, match="Unsupported action_format"):
+        parse_action("raw", "unknown")
     assert extract_tool_call('<tool_call>{"name":"x"}</tool_call>') == '{"name":"x"}'
     assert extract_tool_call("<answer>done</answer>") == "ANSWER: done"
     assert extract_command("<command>pwd</command>") == "pwd"
@@ -96,6 +111,57 @@ def test_generated_code_extraction_and_repair() -> None:
     compile(repaired, "<generated>", "exec")
     assert "{{<answer>}}" in repaired
     assert extract_game_code(f"```python\n{broken}\n```") == repaired
+
+
+def test_native_loader_skips_nonconcrete_base_env() -> None:
+    code = r'''
+class BaseEnv:
+    pass
+
+class PuzzleEnv(BaseEnv):
+    def reset(self, seed=None):
+        return "ready", {}
+
+    def step(self, action):
+        return "done", 1.0, True, False, {}
+'''
+    env = make_synthetic_env(
+        None,
+        game_code=code,
+        max_turns=3,
+        respect_game_max_turns=True,
+    )
+    try:
+        assert env.game.__class__.__name__ == "PuzzleEnv"
+    finally:
+        env.close()
+
+
+def test_native_loader_rejects_multiple_concrete_envs() -> None:
+    code = r'''
+class FirstEnv:
+    def reset(self, seed=None): return "ready", {}
+    def step(self, action): return "done", 1.0, True, False, {}
+
+class SecondEnv:
+    def reset(self, seed=None): return "ready", {}
+    def step(self, action): return "done", 1.0, True, False, {}
+'''
+    with pytest.raises(ValueError, match="exactly one concrete class"):
+        make_synthetic_env(None, game_code=code)
+
+
+def test_native_loader_accepts_source_class_named_env() -> None:
+    code = r'''
+class Env:
+    def reset(self, seed=None): return "ready", {}
+    def step(self, action): return "done", 1.0, True, False, {}
+'''
+    env = make_synthetic_env(None, game_code=code)
+    try:
+        assert env.game.__class__.__name__ == "Env"
+    finally:
+        env.close()
 
 
 def _trajectory(index: int, reward: float, game: Path) -> Trajectory:

@@ -1,5 +1,6 @@
 """Shared types for SPADE dual-role orchestration across all backends."""
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Any, Optional
@@ -88,6 +89,16 @@ class SpadeConfig:
     env_repair_turns: int = 0
     # Persist rejected generations under <games_dir>/rejected/.
     persist_rejected: bool = False
+
+    # Optional deterministic assurance for generated environments. ProofPack is
+    # intentionally opt-in because SPADE supports Python 3.10+ while
+    # proofpack-env requires Python 3.12+. Once enabled, missing/incompatible
+    # ProofPack is a rejection (never a silent skip).
+    # This qualifies code in ProofPack's isolated runner; it does NOT move
+    # accepted SPADE training rollouts out of the trainer process.
+    use_proofpack_qualification: bool = False
+    proofpack_seeds: List[int] = field(default_factory=lambda: [0, 1, 42])
+    proofpack_timeout_seconds: float = 5.0
 
     # Game parameters
     max_turns: int = 30  # Maximum turns per game
@@ -209,3 +220,42 @@ class SpadeConfig:
 
     # Additional metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Reject invalid rollout/assurance configuration before any LLM call."""
+        if (
+            not isinstance(self.max_turns, int)
+            or isinstance(self.max_turns, bool)
+            or self.max_turns <= 0
+        ):
+            raise ValueError("max_turns must be a positive integer")
+        try:
+            proofpack_timeout = float(self.proofpack_timeout_seconds)
+        except (TypeError, ValueError, OverflowError):
+            proofpack_timeout = math.nan
+        if (
+            not isinstance(self.proofpack_timeout_seconds, (int, float))
+            or isinstance(self.proofpack_timeout_seconds, bool)
+            or not math.isfinite(proofpack_timeout)
+            or proofpack_timeout <= 0
+        ):
+            raise ValueError("proofpack_timeout_seconds must be a positive finite number")
+        self.proofpack_timeout_seconds = proofpack_timeout
+
+        try:
+            seeds = list(self.proofpack_seeds)
+        except TypeError as exc:
+            raise ValueError("proofpack_seeds must be a non-empty sequence of integers") from exc
+        if not seeds or any(
+            not isinstance(seed, int) or isinstance(seed, bool) for seed in seeds
+        ):
+            raise ValueError("proofpack_seeds must be a non-empty sequence of integers")
+        self.proofpack_seeds = seeds
+
+        if self.use_proofpack_qualification and self.action_format not in {
+            "boxed",
+            "tool_call",
+        }:
+            raise ValueError(
+                "ProofPack qualification supports action_format='boxed' or 'tool_call'"
+            )

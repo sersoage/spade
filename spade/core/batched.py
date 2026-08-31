@@ -19,8 +19,9 @@ from spade.core.model_adapter import ModelAdapter
 from spade.core.game_generator import SyntheticGameGenerator
 from spade.core.prompts import generate_game_generation_prompt
 from spade.core.envs.synthetic_game_env import make_synthetic_env
+from spade.core.proofpack_bridge import proofpack_available
 from spade.core.utils import (
-    validate_game,
+    validate_game_with_reason,
     save_game_file,
     extract_game_code,
     build_env_trajectory,
@@ -29,6 +30,26 @@ from spade.core.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_generated_game(
+    game_file: Path,
+    config: SpadeConfig,
+    *,
+    validate_runtime: bool,
+) -> tuple[bool, str]:
+    """Apply the same explicit assurance policy as the async orchestrator."""
+    if not validate_runtime and not config.use_proofpack_qualification:
+        return True, "Generated-game validation disabled"
+    return validate_game_with_reason(
+        game_file,
+        validate_runtime=validate_runtime,
+        proofpack_enabled=config.use_proofpack_qualification,
+        action_format=config.action_format,
+        proofpack_seeds=config.proofpack_seeds,
+        proofpack_timeout_seconds=config.proofpack_timeout_seconds,
+        max_turns=config.max_turns,
+    )
 
 
 def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
@@ -80,8 +101,13 @@ async def _generate_single_game_async(
                 game_code, games_dir, rollout_id, index, skill
             )
 
-            if validate and not validate_game(game_file):
-                raise RuntimeError("Game validation failed")
+            is_valid, validation_reason = _validate_generated_game(
+                game_file,
+                config,
+                validate_runtime=validate,
+            )
+            if not is_valid:
+                raise RuntimeError(f"Game validation failed: {validation_reason}")
 
             env_traj = build_env_trajectory(
                 model=model,
@@ -141,6 +167,18 @@ def generate_games_batched(
     Returns:
         Tuple of (game file paths, path -> trajectory mapping)
     """
+    if config.use_proofpack_qualification:
+        available, detail = proofpack_available()
+        if not available:
+            raise RuntimeError(
+                "ProofPack qualification is enabled but unavailable; refusing "
+                f"to generate environments. {detail}"
+            )
+        logger.warning(
+            "[PROOFPACK] Qualification is isolated; accepted game code still "
+            "executes in-process during native training/playback."
+        )
+
     games_dir = Path(games_dir)
     games_dir.mkdir(parents=True, exist_ok=True)
 
@@ -181,8 +219,13 @@ def generate_games_batched(
                 game_code, games_dir, rollout_id, base_index + i, skill
             )
 
-            if validate and not validate_game(game_file):
-                raise RuntimeError("Game validation failed")
+            is_valid, validation_reason = _validate_generated_game(
+                game_file,
+                config,
+                validate_runtime=validate,
+            )
+            if not is_valid:
+                raise RuntimeError(f"Game validation failed: {validation_reason}")
 
             env_traj = build_env_trajectory(
                 model=model,
@@ -272,7 +315,11 @@ def play_games_batched(
     for game_file in game_files:
         for _ in range(trajectories_per_game):
             try:
-                env = make_synthetic_env(str(game_file))
+                env = make_synthetic_env(
+                    str(game_file),
+                    max_turns=config.max_turns,
+                    respect_game_max_turns=True,
+                )
                 obs, _ = env.reset()
                 active_instances.append({
                     "env": env,

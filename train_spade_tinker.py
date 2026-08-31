@@ -65,6 +65,11 @@ class SpadeConfig(train.Config):
     env_temperature: float = 0.7
     env_max_tokens: int = 8192
     env_generation_template: str = "qwen3_game_generation"
+    # Optional Python >=3.12 ProofPack gate. Missing/incompatible ProofPack is
+    # fail-closed only when this flag is explicitly enabled.
+    use_proofpack_qualification: bool = False
+    proofpack_seeds: list[int] = chz.field(default_factory=lambda: [0, 1, 42])
+    proofpack_timeout_seconds: float = 5.0
 
     # Actor settings
     actor_temperature: float = 1.0

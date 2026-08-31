@@ -209,18 +209,32 @@ class SyntheticGameEnv:
         except Exception as e:
             raise RuntimeError(f"Failed to execute game code: {e}")
 
-        # Step 2: Find the game class (should end with 'Env')
-        # Skip base classes that were injected, not generated
-        _BASE_CLASS_NAMES = {'Env', 'ToolUseBaseEnv'}
-        game_class = None
+        # Step 2: Apply the same concrete-class contract ProofPack qualifies.
+        # A helper such as ``BaseEnv`` must not win merely because it appears
+        # first in source order, and ambiguous multiple concrete environments
+        # must fail instead of selecting one nondeterministically.
+        # ``ToolUseBaseEnv`` is injected, while a source-defined class named
+        # exactly ``Env`` is a legitimate ProofPack-qualified entrypoint.
+        base_class_names = {'ToolUseBaseEnv'}
+        game_classes = []
         for name, obj in module.__dict__.items():
-            if name.endswith('Env') and name not in _BASE_CLASS_NAMES and callable(obj):
-                if hasattr(obj, '__init__'):
-                    game_class = obj
-                    break
+            if (
+                name.endswith('Env')
+                and name not in base_class_names
+                and isinstance(obj, type)
+                and obj.__module__ == module.__name__
+                and callable(getattr(obj, 'reset', None))
+                and callable(getattr(obj, 'step', None))
+            ):
+                game_classes.append(obj)
 
-        if game_class is None:
-            raise ValueError("No valid game class found in code (expected class ending with 'Env')")
+        if len(game_classes) != 1:
+            names = [item.__name__ for item in game_classes]
+            raise ValueError(
+                "Expected exactly one concrete class ending in 'Env' with "
+                f"callable reset()/step(); found {names}"
+            )
+        game_class = game_classes[0]
 
         # Step 3: Instantiate the game
         try:
