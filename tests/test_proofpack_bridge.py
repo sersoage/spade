@@ -603,10 +603,12 @@ def test_async_validation_deadline_covers_default_proofpack_seeds() -> None:
 
 
 def test_orchestrator_fails_before_generation_when_assurance_is_unavailable() -> None:
-    SpadeOrchestrator = _load_orchestrator_class()
+    orchestrator_module = _load_orchestrator_module()
+    SpadeOrchestrator = orchestrator_module.SpadeOrchestrator
     with (
-        patch(
-            "spade.core.orchestrator.proofpack_available",
+        patch.object(
+            orchestrator_module,
+            "proofpack_available",
             return_value=(False, "missing max_turns capability"),
         ),
         pytest.raises(RuntimeError, match="refusing to generate environments"),
@@ -774,7 +776,8 @@ def test_legacy_assured_difficulty_probe_stays_in_proofpack_proxy() -> None:
 def test_actual_orchestrator_generation_path_enforces_explicit_assurance(
     tmp_path: Path,
 ) -> None:
-    SpadeOrchestrator = _load_orchestrator_class()
+    orchestrator_module = _load_orchestrator_module()
+    SpadeOrchestrator = orchestrator_module.SpadeOrchestrator
 
     config = SpadeConfig(
         use_proofpack_qualification=True,
@@ -783,8 +786,9 @@ def test_actual_orchestrator_generation_path_enforces_explicit_assurance(
         max_turns=37,
         action_format="tool_call",
     )
-    with patch(
-        "spade.core.orchestrator.proofpack_available",
+    with patch.object(
+        orchestrator_module,
+        "proofpack_available",
         return_value=(True, "available"),
     ):
         orchestrator = SpadeOrchestrator(
@@ -794,8 +798,9 @@ def test_actual_orchestrator_generation_path_enforces_explicit_assurance(
             game_policy=GamePolicy(),
         )
 
-    with patch(
-        "spade.core.orchestrator.validate_game_with_reason",
+    with patch.object(
+        orchestrator_module,
+        "validate_game_with_reason",
         return_value=(False, "ProofPack qualification failed: planted rejection"),
     ) as validation:
         result = asyncio.run(

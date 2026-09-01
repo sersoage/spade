@@ -164,6 +164,13 @@ ProofPack receipt, complete paired trace, Assay manifest, decision, certificatio
 ledger. The manifest binds the receipt and trace digests. The CLI returns nonzero on dependency,
 generation, qualification, leakage, rollout, or persistence failure.
 
+For an offline test of stronger behavioral environment identity, see the
+[counterfactual witness guide](docs/counterfactual-witness.md). Its sealed runner mutates and
+replays the preserved 18-environment cohort entirely inside ProofPack isolation, compares a compact
+witness certificate with cost-matched random and fixed-probe baselines, and makes zero AGY calls or
+learner updates. A passing result is an exploratory operator-holdout signal only; it is not evidence
+that learner performance improved.
+
 This command is intentionally a one-cluster smoke harness. Repeating it does not produce an
 aggregate multi-environment experiment. The
 [assurance guide](docs/assurance-integration.md#multi-environment-agy-experiments) documents the
