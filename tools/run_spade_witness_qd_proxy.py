@@ -424,8 +424,9 @@ def _runtime_identity() -> dict[str, Any]:
 def _validate_runtime_identity(value: object) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ProxyExperimentError("runtime_identity must be an object")
-    base._validate_runtime_identity(value)
-    files = value.get("coverage_forced_files")
+    base_identity = dict(value)
+    files = base_identity.pop("coverage_forced_files", None)
+    base._validate_runtime_identity(base_identity)
     if not isinstance(files, Mapping) or set(files) != {
         "coverage_forced_runner",
         "coverage_forced_core",

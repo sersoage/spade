@@ -136,6 +136,55 @@ def test_sealed_budget_arithmetic_has_37_call_headroom() -> None:
     assert pilot.AUTHORIZED_GLOBAL_CALL_CAP - 413 == 37
 
 
+def test_extended_runtime_identity_validates_legacy_base_schema(tmp_path: Path) -> None:
+    runtime_file = tmp_path / "sealed-runtime.py"
+    runtime_file.write_text("# sealed\n", encoding="utf-8")
+    runtime_digest = pilot._bytes_digest(runtime_file.read_bytes())
+    base_identity = {
+        "runner_digest": _sha(1),
+        "python_implementation": "CPython",
+        "python_version": "3.12.0",
+        "python_executable": "/sealed/python",
+        "python_executable_digest": _sha(2),
+        "platform": "sealed-platform",
+        "agy_executable": "/sealed/agy",
+        "agy_executable_digest": _sha(3),
+        "agy_version": "sealed-version",
+        "imported_sources": {
+            name: {"path": f"/sealed/{name}.py", "digest": _sha(index)}
+            for index, name in enumerate(
+                (
+                    "spade_live_runner",
+                    "proofpack_qualifier",
+                    "proofpack_receipt_validator",
+                    "assay_writer",
+                ),
+                start=10,
+            )
+        },
+    }
+    extended = {
+        **base_identity,
+        "coverage_forced_files": {
+            name: {"path": str(runtime_file), "digest": runtime_digest}
+            for name in (
+                "coverage_forced_runner",
+                "coverage_forced_core",
+                "counterfactual_witness_core",
+                "witness_archive_core",
+                "counterfactual_witness_runner",
+                "outcome_replay_runner",
+                "proofpack_spade_target",
+                "proofpack_spade_launcher",
+                "proofpack_spade_worker",
+                "proofpack_sandbox_executable",
+            )
+        },
+    }
+
+    assert pilot._validate_runtime_identity(extended) == extended
+
+
 def test_failure_category_is_recomputed_not_trusted(tmp_path: Path) -> None:
     engine = _engine(tmp_path)
     request = _request(engine)
