@@ -185,7 +185,8 @@ The 18-cluster design needs at least 180 `agy` CLI launches and can use substant
 generation retries, hint rewrites, reserve selection, or multi-turn episodes occur; the sealed
 protocol maximum is 783 CLI launches. The 450 limit is a hard cap for the plan's sealed local run
 root, not a token, cost, or backend-request claim. The runner stops incomplete if the cap is reached
-and never sends a favorable subset to Assay. No attempted pilot has completed. A confirmatory stage
+and never sends a favorable subset to Assay. No 18-cluster Assay pilot under this runner has
+completed. A confirmatory stage
 should only be sized from variance in a complete locked pilot, receive its own authorization, and
 never pool pilot outcomes. Neither stage can authorize `model.lock` through this integration.
 
@@ -299,9 +300,9 @@ successful c003 attempt-1 unhinted arm and c004 attempt-2 hinted arm remain ledg
 Eleven pairs have
 durable resolutions (22 eligible logical outcomes), all `1.0`/`1.0` ties in the ordered `c001`
 through partial-`c004` prefix. The run has no resolution manifest, Assay request, Assay result, or
-`model.lock`, and must not be resumed or pooled. Global recorded usage is 205 of 450 authorized
-calls. These partial ceiling results are descriptive only; v5 did not establish a hint benefit or
-that the prompt treatment improves SPADE.
+`model.lock`, and must not be resumed or pooled. At that historical cutoff, global recorded usage
+was 205 of 450 authorized calls. These partial ceiling results are descriptive only; v5 did not
+establish a hint benefit or that the prompt treatment improves SPADE.
 
 ## Verification
 
@@ -313,10 +314,13 @@ python -m pytest -q \
   tests/test_game_utils.py \
   tests/test_live_spade_eval.py \
   tests/test_spade_agy_experiment.py \
-  tests/test_spade_agy_outcome_replay.py
+  tests/test_spade_agy_outcome_replay.py \
+  tests/test_witness_qd_proxy.py \
+  tests/test_spade_witness_qd_proxy.py
 python tools/run_live_spade_eval.py --help
 python tools/run_spade_agy_experiment.py --help
 python tools/run_spade_agy_outcome_replay.py --help
+python tools/run_spade_witness_qd_proxy.py --help
 ```
 
 ProofPack and Assay maintain their own focused suites and repository-level `make verify` commands.

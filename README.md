@@ -174,6 +174,13 @@ baseline. This is an exploratory operator-holdout signal only; it is not evidenc
 performance improved. The same evidence can now be ingested by a shadow-only, immutable archive
 ledger; that boundary records decisions but deliberately exposes no training selector or reward.
 
+The [quality-matched coverage-forced proxy](docs/counterfactual-witness.md#quality-matched-coverage-forced-proxy)
+is the next sealed experiment. It compares redundant historical portfolios with portfolios that
+force inclusion of a behaviorally distinct recovery-false challenger while matching CWA quality.
+Its result, if the preparation and outcome gates complete, is only an exploratory noncausal
+association over realized environment-and-hint packages—not archive superiority or learner
+improvement.
+
 This command is intentionally a one-cluster smoke harness. Repeating it does not produce an
 aggregate multi-environment experiment. The
 [assurance guide](docs/assurance-integration.md#multi-environment-agy-experiments) documents the

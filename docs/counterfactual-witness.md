@@ -131,10 +131,9 @@ cleanly falsified the training mutations and materially outperformed both sealed
 the result is still only representation evidence. It does not show that archive-based curriculum
 selection improves a learner.
 
-This pass permits the next engineering step: use certificates and skill/difficulty-partitioned
-archive decisions in shadow curriculum selection, then run a separate same-checkpoint,
-compute-matched Slime learner assay. The learner assay—not this offline pass—is the test of an
-actual SPADE improvement.
+This pass permitted a shadow-only archive ingestion smoke. That smoke is an integration and
+negative-control result; a separate same-checkpoint, compute-matched Slime learner assay remains
+the test of an actual SPADE improvement.
 
 ## Shadow archive integration
 
@@ -170,3 +169,125 @@ That result is a useful negative control: this cohort has exactly one environmen
 does not test competition, replacement, or learner benefit. Activating archive selection therefore
 requires a separately sealed cohort with multiple lineage-controlled candidates in the same cell
 and an outcome assay that is independent of the witness evidence.
+
+## Quality-matched coverage-forced proxy
+
+The next experiment is a deliberately narrower proxy for behavioral coverage, not an active
+archive or learner experiment. It uses six strata—`c001`, `c003`, `c004`, `c005`, `c006`, and
+`c007`—with two imported Google Pro environments per stratum from the preserved v3 and v4 runs.
+Both historical environments must revalidate in the exact standard descriptor cell: boxed action,
+one-step oracle, two distinct reset-seed states, zero-reward continuing invalid action, successful
+wrong-then-oracle recovery, and unmeasured reverse-order behavior.
+
+One new challenger per stratum is requested from `gemini-3.1-pro-high`. Before it can enter the
+panel, it must pass ProofPack V0–V4, deterministic reward-positive one-turn viability on seeds
+`0` and `42`, CWA training-mutant recall at least `0.90`, admitted-control false rejection at most
+`0.05`, and the exact matched descriptor except that wrong-then-oracle recovery must be observed
+false. The wrong action must remain nonterminal and nontruncated during the five-turn CWA replay;
+at the one-turn actor boundary, a wrong answer can be recorded as truncated and still counts simply
+as a zero-reward task failure. A failed target-cell or per-stratum quality screen may use the second
+sealed design attempt.
+
+The redundant portfolio is `{v3, v4}`. The coverage-forced portfolio is `{challenger, retained
+historical}`; the historical candidate whose CWA held-out-applicable recall is closest to the
+challenger is displaced, with environment and CWA evidence digests as the only tie-breakers. Every
+stratum must produce a different portfolio, every absolute portfolio-quality gap must be at most
+`0.125`, and the six-stratum mean absolute gap must be at most `0.0625`. All six scientific records
+and the global quality gate are recomputed before any challenger hint call.
+
+The actor route is requested `gemini-3.7-flash-high`. The sealed panel has 36 packages
+(`6 strata × 3 candidates × 2 seeds`), each evaluated with and without its source-specific locked
+hint in counterbalanced order at horizon one. A nonempty response that misses the boxed parser is
+an observed zero reward and is never retried. Only exact empty-response or provider-timeout results
+open a whole-pair retry. All unresolved pairs receive at most two waves; a third wave is permitted
+only when at most 14 remain.
+
+Two immutable seals separate the phases. The generation intent is written before any new AGY
+request. The actor plan is written only after all 18 candidate qualification, viability, CWA, and
+hint records pass, and before any actor request. Requests are reserved before spawn, an ambiguous
+request is charged and never replayed, runtime/source bytes are revalidated at execution
+boundaries, and the aggregate roots the complete evidence inventory. The runner never invokes
+Assay, rejects a physical `model.lock`, records no Assay decision, and cannot authorize release.
+
+The hard new-call budget is:
+
+| Phase | Maximum AGY calls |
+| --- | ---: |
+| Challenger design (`6 × 2`) | 12 |
+| Challenger hints (`6 × 2 seeds × 2`) | 24 |
+| First two whole-pair actor waves | 144 |
+| Optional third actor wave (`14 × 2`) | 28 |
+| **Total new calls** | **208** |
+
+The historical ledger records 205 charged calls, so this plan can reach at most 413 of the 450
+authorized calls and leaves 37 calls unused. Model names are requested routes only;
+`backend_identity_attested` remains false.
+
+The prospective outcome gates require a pooled unhinted rate in `[0.10, 0.90]`, at least eight
+discordant pairs, a coverage-forced delta of at least `0.10`, positive leave-one-stratum-out
+contrasts, and a first-attempt exogenous failure rate at most `0.15`. It also reports a one-sided
+`(3!)^6 = 46,656` label-permutation sensitivity and a one-sided `2^6 = 64` stratum sign-flip
+sensitivity, each gated at `p <= 0.05`. These are exact enumerations under strong candidate-label
+exchangeability and stratum-contrast symmetry assumptions, respectively; neither is design-based
+randomization inference.
+
+Run only from the pinned SPADE/ProofPack/Assay stack after committing and auditing the exact runner
+bytes:
+
+```bash
+SPADE_STACK=/absolute/path/to/spade-baseline-stack-20260901
+cd "$SPADE_STACK/spade"
+
+ASSURANCE_PYTHON="$SPADE_STACK/proofpack/.venv/bin/python"
+V3_RUN="$PWD/.assay/spade-experiments/runs/spade-agy-pilot-baseline-google-pro-v3-1ac5e27ddad0f68baaa54bd9eb67a6950773226cd936afd1a890a475822b2746"
+V4_RUN="$PWD/.assay/spade-experiments/runs/spade-agy-pilot-designer-prompt-treatment-google-pro-v4-8edc56d38e3502dd1e85db8b670b258ead9a4e1eddcd7d807e6a05e7b56df5fc"
+PROXY_ROOT="$PWD/.assay/spade-coverage-forced-proxy"
+PROXY_LEDGER="$PROXY_ROOT/shared-ledger"
+PROXY_INTENT="$PROXY_ROOT/intent.json"
+
+"$ASSURANCE_PYTHON" tools/run_spade_witness_qd_proxy.py intent-plan \
+  --experiment-id spade-google-coverage-forced-matched-swap-v1 \
+  --v3-run "$V3_RUN" \
+  --v4-run "$V4_RUN" \
+  --output-root "$PROXY_ROOT" \
+  --shared-ledger-root "$PROXY_LEDGER" \
+  --output "$PROXY_INTENT"
+
+# Validation only: zero AGY calls.
+"$ASSURANCE_PYTHON" tools/run_spade_witness_qd_proxy.py prepare \
+  --intent "$PROXY_INTENT"
+
+# Generate and locally screen challengers, then seal actor-plan.json.
+"$ASSURANCE_PYTHON" tools/run_spade_witness_qd_proxy.py prepare \
+  --intent "$PROXY_INTENT" \
+  --execute \
+  --acknowledge-new-call-cap 208
+
+# Audit actor-plan.json before allowing actor calls.
+"$ASSURANCE_PYTHON" tools/run_spade_witness_qd_proxy.py run \
+  --intent "$PROXY_INTENT"
+"$ASSURANCE_PYTHON" tools/run_spade_witness_qd_proxy.py run \
+  --intent "$PROXY_INTENT" \
+  --execute \
+  --acknowledge-new-call-cap 208
+```
+
+### Result — pending execution
+
+| Field | Result |
+| --- | --- |
+| Status | Pending; no proxy AGY calls launched at publication time |
+| Intent / actor-plan / aggregate digests | Pending / pending / pending |
+| New / global charged calls | 0 / 205 at publication time |
+| Maximum / mean absolute quality gap | Pending / pending |
+| Pooled baseline / discordant pairs | Pending / pending |
+| Coverage-forced delta | Pending |
+| Label-permutation / sign-flip sensitivity | Pending / pending |
+| Leave-one-stratum-out / exogenous / parser diagnostics | Pending |
+| Assay / release authorized / learner claim | Not run / false / none |
+
+Even if every gate passes, the result is only an exploratory, noncausal quality-matched
+coverage-forced portfolio-swap association over these realized environment-plus-hint packages. It
+does not establish causal selector benefit, QD or archive superiority, environment-quality
+improvement, learner improvement, or backend identity. A compute-matched learner-lineage
+experiment is still required to claim that SPADE itself improved.
