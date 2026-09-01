@@ -135,3 +135,38 @@ This pass permits the next engineering step: use certificates and skill/difficul
 archive decisions in shadow curriculum selection, then run a separate same-checkpoint,
 compute-matched Slime learner assay. The learner assay—not this offline pass—is the test of an
 actual SPADE improvement.
+
+## Shadow archive integration
+
+`spade.core.witness_archive_shadow` is the deliberately non-active integration boundary. It loads
+the exact plan → aggregate → cluster → certificate closure from an externally supplied aggregate
+digest, verifies each caller-supplied game file against the sealed environment bytes, and appends
+the resulting archive decision to a single-writer, immutable hash chain. Each event binds the
+quality and lineage policy identifiers, input evidence, serialized decision, selected cell members,
+and complete post-state digest. Conflicting resumes, unknown files, symlinks, source-byte drift, and
+tampering fail closed.
+
+The API intentionally exposes no curriculum-selection or reward method. Quality and lineage remain
+caller-defined shadow metadata; the ledger cannot affect training. The fixed integration smoke uses
+quality `0.0` and the singleton environment digest as lineage:
+
+```bash
+"$ASSURANCE_PYTHON" tools/run_witness_archive_shadow.py \
+  --run-dir "$CWA_ROOT/spade-counterfactual-witness-v1-99e023d40d169af545cc6741e39cf55daa8d334b9b688e50235ec4cbead23e82" \
+  --expected-aggregate-digest sha256:e675af2b4da9fd4916884eb71f7661e3f16dca558c2c6f9376c03e485c6f0b00 \
+  --source-selections-dir "$SOURCE_RUN/selections" \
+  --ledger-dir /absolute/path/to/witness-shadow-ledger
+```
+
+The sealed 18-environment smoke completed twice with exactly-once resume and no model, network,
+source-execution, or learner boundary. It produced 18 events, 18 cells, and 18
+`champion_inserted` decisions; the final event-chain digest is
+`sha256:2bd39e4bf95547d1c66f557e40da49d975ebc9efe5596f53d487735ce6f64e95`, and the archive
+post-state digest is
+`sha256:e2e3a0df5f6bc85a94b260158253951a6683ce57fd77ec1cd86f652e6f84336d`.
+
+That result is a useful negative control: this cohort has exactly one environment in every
+`(skill, difficulty, behavior)` cell, so archive treatment is identical to keeping every item. It
+does not test competition, replacement, or learner benefit. Activating archive selection therefore
+requires a separately sealed cohort with multiple lineage-controlled candidates in the same cell
+and an outcome assay that is independent of the witness evidence.

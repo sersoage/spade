@@ -171,7 +171,8 @@ witness certificate with cost-matched random and fixed-probe baselines, and make
 learner updates. The sealed 2026-09-01 run passed all four representation gates with one selected
 probe per environment and a `+0.343` held-out recall advantage over the cost-matched random
 baseline. This is an exploratory operator-holdout signal only; it is not evidence that learner
-performance improved.
+performance improved. The same evidence can now be ingested by a shadow-only, immutable archive
+ledger; that boundary records decisions but deliberately exposes no training selector or reward.
 
 This command is intentionally a one-cluster smoke harness. Repeating it does not produce an
 aggregate multi-environment experiment. The
