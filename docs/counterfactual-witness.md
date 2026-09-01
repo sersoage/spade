@@ -104,7 +104,34 @@ that one selected witness has the same total operation budget as full V0-V4. The
 full safe-bank upper bound, applicable-mutant recall, selected probe count, behavioral descriptor,
 certificate digest, every trace digest, and the exact zero-provider/zero-learner boundary.
 
-Passing permits only the next engineering step: use certificates and skill/difficulty-partitioned
+## Sealed execution result — 2026-09-01
+
+The production run at SPADE commit `27d2bb8632d961f6b0e703665a43e628026ccaa4` completed all
+18 environments and passed all four pre-sealed gates. Its plan digest is
+`sha256:99e023d40d169af545cc6741e39cf55daa8d334b9b688e50235ec4cbead23e82`; its aggregate
+digest is `sha256:e675af2b4da9fd4916884eb71f7661e3f16dca558c2c6f9376c03e485c6f0b00`.
+
+| Metric | Result |
+| --- | ---: |
+| Isolated ProofPack replays completed | 11,544 / 11,544 |
+| Provider calls / learner updates | 0 / 0 |
+| Average selected probes per environment | 1.00 |
+| Training-mutant macro recall | 1.000 |
+| Operator-held-out raw macro recall | 0.875 |
+| Operator-held-out applicable recall | 0.912 (69 observable of 72 raw mutants) |
+| Cost-matched random held-out recall | 0.532 |
+| Witness minus random recall | +0.343 |
+| Qualification-inspired fixed recall | 0.264 |
+| Full safe-bank held-out recall | 0.958 |
+| Admitted-control false-rejection rate | 0.000 |
+
+The selected witness was a wrong-action-then-oracle recovery trace for 17 environments and an
+oracle-prefix-then-wrong trace for the five-step strategic-planning environment. This compact panel
+cleanly falsified the training mutations and materially outperformed both sealed comparators, but
+the result is still only representation evidence. It does not show that archive-based curriculum
+selection improves a learner.
+
+This pass permits the next engineering step: use certificates and skill/difficulty-partitioned
 archive decisions in shadow curriculum selection, then run a separate same-checkpoint,
-compute-matched Slime learner assay. Failing means revise or abandon the witness representation;
-neither outcome can be promoted to an improvement claim by itself.
+compute-matched Slime learner assay. The learner assay—not this offline pass—is the test of an
+actual SPADE improvement.

@@ -168,8 +168,10 @@ For an offline test of stronger behavioral environment identity, see the
 [counterfactual witness guide](docs/counterfactual-witness.md). Its sealed runner mutates and
 replays the preserved 18-environment cohort entirely inside ProofPack isolation, compares a compact
 witness certificate with cost-matched random and fixed-probe baselines, and makes zero AGY calls or
-learner updates. A passing result is an exploratory operator-holdout signal only; it is not evidence
-that learner performance improved.
+learner updates. The sealed 2026-09-01 run passed all four representation gates with one selected
+probe per environment and a `+0.343` held-out recall advantage over the cost-matched random
+baseline. This is an exploratory operator-holdout signal only; it is not evidence that learner
+performance improved.
 
 This command is intentionally a one-cluster smoke harness. Repeating it does not produce an
 aggregate multi-environment experiment. The
