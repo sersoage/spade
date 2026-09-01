@@ -171,6 +171,11 @@ sealed 18-cluster `agy` pilot runner, its dry-run-first workflow, invocation bud
 provenance controls, sealed output root, and the explicit execution acknowledgement required before
 provider calls.
 
+The proposed next-step curriculum signal is documented in
+[Controlled marginal teachability](docs/controlled-marginal-teachability.md). It distinguishes a
+same-seed paired hint-effect measurement from the stronger equal-budget learner-branch experiment
+required to establish downstream training benefit.
+
 ## Tinker Training
 
 SPADE also supports training with [Thinking Machines](https://thinkingmachines.ai/tinker)' **Tinker** distributed training framework through the integration under `spade/tinker/`.

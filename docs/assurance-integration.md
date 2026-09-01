@@ -185,9 +185,10 @@ The 18-cluster design needs at least 180 `agy` CLI launches and can use substant
 generation retries, hint rewrites, reserve selection, or multi-turn episodes occur; the sealed
 protocol maximum is 783 CLI launches. The 450 limit is a hard cap for the plan's sealed local run
 root, not a token, cost, or backend-request claim. The runner stops incomplete if the cap is reached
-and never sends a favorable subset to Assay. This pilot has not been launched. A confirmatory stage
-should only be sized from the locked pilot variance, receive its own authorization, and never pool
-pilot outcomes. Neither stage can authorize `model.lock` through this integration.
+and never sends a favorable subset to Assay. This repository does not ship or claim a completed
+pilot result. A confirmatory stage should only be sized from locked pilot variance, receive its own
+authorization, and never pool pilot outcomes. Neither stage can authorize `model.lock` through this
+integration.
 
 ## Verification
 
@@ -206,3 +207,9 @@ python tools/run_spade_agy_experiment.py --help
 ProofPack and Assay maintain their own focused suites and repository-level `make verify` commands.
 Their design documents are `docs/design/spade-environment-qualification.md` in ProofPack and
 `docs/design/spade-autocurriculum-certification.md` in Assay.
+
+For the proposed training-time improvement beyond aggregate hint regret, see
+[`controlled-marginal-teachability.md`](controlled-marginal-teachability.md). That protocol
+separates the cheap paired hint-effect prerequisite from the stronger same-checkpoint,
+equal-budget learner-branch experiment needed to claim downstream learning gain. An `agy`-only
+study cannot perform those learner updates.
