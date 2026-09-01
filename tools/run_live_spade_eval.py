@@ -70,14 +70,25 @@ Security and interface requirements:
    heapq, collections, itertools, typing, dataclasses, json, functools, string,
    and copy. Never access files, the network, processes, environment variables,
    frames, globals, or Python object internals.
-2. The class name must end in Env.
-3. Implement __init__(self, max_turns=10, **kwargs).
-4. Implement reset(self, seed=None) -> (observation: str, info: dict).
-5. Implement solution() returning one answer or a list of turn-by-turn actions.
-6. Implement step(action) -> (observation, reward, terminated, truncated, info).
-7. Every seed must be deterministic. A correct completed episode returns 1.0;
+2. Do not use any ProofPack-disallowed identifier anywhere, even as an
+   ordinary variable, parameter, import alias, class/instance attribute, or
+   indirect capability name. These words may appear in user-facing string
+   literals, but never as Python identifiers. In particular, never use:
+   system, modules, breakpoint, compile, delattr, eval, exec, getattr, globals,
+   hasattr, input, locals, memoryview, open, setattr, vars, __import__, builtins,
+   currentframe, f_back, f_builtins, f_code, f_globals, f_locals, fork, forkpty,
+   importlib, inspect, os, pathlib, popen, subprocess, sys, tb_frame, types.
+3. The class name must end in Env.
+4. Implement __init__(self, max_turns=10, **kwargs).
+5. Implement reset(self, seed=None) -> (observation: str, info: dict).
+6. Implement solution() returning one answer or a list of turn-by-turn actions.
+7. Implement step(action) -> (observation, reward, terminated, truncated, info).
+8. Every seed must be deterministic. A correct completed episode returns 1.0;
    incorrect actions return 0.0 and must not terminate immediately.
-8. Tell the player to respond with \\boxed{{action}}.
+9. Tell the player to respond with \\boxed{{action}}.
+10. Keep the complete source at or below 120 nonblank lines and 8,000
+    characters, including comments and docstrings. Implement only the required
+    puzzle and interface; do not add a framework, tutorial, tests, or prose.
 
 Return only executable Python inside one ```python ... ``` block."""
 

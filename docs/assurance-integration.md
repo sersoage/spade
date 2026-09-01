@@ -185,9 +185,29 @@ The 18-cluster design needs at least 180 `agy` CLI launches and can use substant
 generation retries, hint rewrites, reserve selection, or multi-turn episodes occur; the sealed
 protocol maximum is 783 CLI launches. The 450 limit is a hard cap for the plan's sealed local run
 root, not a token, cost, or backend-request claim. The runner stops incomplete if the cap is reached
-and never sends a favorable subset to Assay. This pilot has not been launched. A confirmatory stage
-should only be sized from the locked pilot variance, receive its own authorization, and never pool
-pilot outcomes. Neither stage can authorize `model.lock` through this integration.
+and never sends a favorable subset to Assay. No attempted pilot has completed. A confirmatory stage
+should only be sized from variance in a complete locked pilot, receive its own authorization, and
+never pool pilot outcomes. Neither stage can authorize `model.lock` through this integration.
+
+### Incomplete Google Pro v3 baseline and prompt treatment
+
+The requested-route `gemini-3.1-pro-high` v3 baseline run was attempted and failed before cohort
+lock. It reserved 35 `agy` calls: 14 designer calls and 21 hint calls. Five designer calls returned
+the sealed 180-second timeout. Seven clusters were selected, but the remaining strategic-planning
+hard primary and reserve slots could not qualify: their completed candidates failed ProofPack V0
+for the disallowed identifiers `system` and `modules`, while the other attempts timed out. No cohort
+lock, actor outcome, aggregate Assay request, or Assay decision exists. This is an incomplete run,
+not baseline performance evidence, and it must not be resumed or pooled with a later experiment.
+
+The next treatment changes only `DESIGNER_PROMPT`. It tells the designer that ProofPack-disallowed
+identifiers are forbidden even when used as ordinary variables, attributes, or aliases, names
+`system` and `modules` plus dangerous reflection, dynamic-execution, filesystem, and process
+capabilities, and caps the requested implementation at 120 nonblank lines and 8,000 characters.
+The cap is intended to reduce overlong generations that can encounter the 180-second boundary; it
+does not establish why any call timed out or guarantee that a later call will complete. The
+environment interface, skill and difficulty instructions, sealed schedule, qualification gate, and
+analysis remain unchanged. No success or improvement claim is warranted until a new separately
+sealed run completes its full cohort and Assay decision.
 
 ## Verification
 

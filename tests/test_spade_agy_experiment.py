@@ -452,6 +452,59 @@ def test_hard_call_cap_reserves_before_spawn_and_never_signals_assay(tmp_path) -
     assert not (run_dir / "assay-request.json").exists()
 
 
+def test_sealed_designer_request_uses_hardened_bounded_prompt(tmp_path) -> None:
+    output_root = tmp_path / "runs"
+    plan = _plan(cap=1, run_output_root=output_root)
+    plan_path = _write_plan(tmp_path, plan)
+    run_dir = agy.derive_run_dir(output_root, plan)
+    observed_prompts: list[str] = []
+
+    async def capture_designer(_client, _model, prompt, **_kwargs):
+        observed_prompts.append(prompt)
+        return "```python\n# prompt-contract\nclass PuzzleEnv: pass\n```"
+
+    with pytest.raises(agy.CallCapExceeded, match="call cap 1"):
+        asyncio.run(
+            agy.run_experiment(
+                plan_path,
+                output_root,
+                execute=True,
+                acknowledged_call_cap=1,
+                dependencies=_dependencies(run_dir, llm_call=capture_designer),
+            )
+        )
+
+    assert len(observed_prompts) == 1
+    prompt = observed_prompts[0]
+    assert prompt.startswith(agy.live.DESIGNER_PROMPT.format(skill="skill-0"))
+    request_path = next((run_dir / "calls").glob("*/request.json"))
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    assert request["plan_digest"] == plan["plan_digest"]
+    assert request["purpose"]["phase"] == "designer"
+    assert request["prompt"] == prompt
+    assert request["prompt_digest"] == agy._digest(prompt)
+
+    for identifier in (
+        "system",
+        "modules",
+        "eval",
+        "exec",
+        "getattr",
+        "globals",
+        "open",
+        "setattr",
+        "__import__",
+        "subprocess",
+        "sys",
+    ):
+        assert identifier in prompt
+    assert "ordinary variable, parameter, import alias" in prompt
+    assert "class/instance attribute" in prompt
+    assert "120 nonblank lines" in prompt
+    assert "8,000" in prompt
+    assert "do not add a framework, tutorial, tests, or prose" in prompt
+
+
 def test_runtime_drift_fails_before_any_provider_call(tmp_path) -> None:
     output_root = tmp_path / "runs"
     plan = _plan(run_output_root=output_root)
