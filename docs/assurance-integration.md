@@ -209,6 +209,78 @@ environment interface, skill and difficulty instructions, sealed schedule, quali
 analysis remain unchanged. No success or improvement claim is warranted until a new separately
 sealed run completes its full cohort and Assay decision.
 
+### Prospective v5 outcome-only replay
+
+The v4 prompt-treatment run produced a complete 18-cluster pre-outcome cohort, then stopped
+fail-closed at call 89 when the first unhinted `c003` actor call returned an empty AGY response.
+It contains 12 completed actor outcomes (six `1.0`/`1.0` pairs across the ordered `c001` and
+`c002` prefix), one failed outcome, and no Assay request, Assay decision, or `model.lock`. Those
+partial outcomes are descriptive ceiling evidence only and are not imported or pooled below.
+
+The dedicated
+`run_spade_agy_outcome_replay.py` runner can import it without importing a v4 actor call, actor
+outcome, ledger, or Assay artifact. Plan creation requires the authorized historical identities:
+
+```bash
+SPADE_AGY_V4_RUN="$(pwd)/.assay/spade-experiments/runs/\
+spade-agy-pilot-designer-prompt-treatment-google-pro-v4-\
+8edc56d38e3502dd1e85db8b670b258ead9a4e1eddcd7d807e6a05e7b56df5fc"
+SPADE_AGY_V5_RUN_ROOT="$(pwd)/.assay/spade-experiments/runs"
+"$ASSURANCE_PYTHON" tools/run_spade_agy_outcome_replay.py outcome-replay-plan \
+  --source-run "$SPADE_AGY_V4_RUN" \
+  --expected-source-plan-digest \
+    sha256:8edc56d38e3502dd1e85db8b670b258ead9a4e1eddcd7d807e6a05e7b56df5fc \
+  --expected-source-cohort-digest \
+    sha256:161353ebd4454516e3379414444323dd13aeab95640eb130ec7414f23876b84b \
+  --output .assay/spade-experiments/outcome-replay-v5-plan.json \
+  --output-root "$SPADE_AGY_V5_RUN_ROOT" \
+  --experiment-id spade-agy-v4-cohort-outcome-replay-v5 \
+  --total-call-cap 264
+```
+
+The import binds the complete designer/hint call prefix and validated candidate, qualification,
+probe, hint, selection, and cohort leaves. Unknown candidate leaves, orphan calls, path escapes,
+symlinks, and actor/outcome/Assay imports fail closed. The imported bytes become the local resume
+authority, so later actor additions to the historical run cannot enter v5.
+
+The evaluation horizon is derived only from locked probe solutions, before considering any v4
+actor result: a boxed list uses one turn per item, a multiline string one turn per nonblank line,
+and a scalar one turn. All three seeds must agree. For this cohort,
+`c008-strategic-planning-hard` has horizon 5 and the other 17 clusters have horizon 1. Every
+environment is revalidated under the original five-turn ProofPack V0-V4 contract. Separately, a
+twice-per-seed deterministic oracle replay establishes actor-horizon viability; that receipt is not
+represented as full ProofPack qualification.
+
+The 54 `(cluster, seed)` pairs retain their counterbalanced arm order. Each has at most two attempt
+slots. Only an exact empty response or either exact AGY timeout form may open attempt 2. A failure
+discards the entire first pair attempt; both arms restart from the locked seed and are never mixed
+across attempts. Any nonempty response is consumed as model behavior, including a malformed boxed
+action. Generic nonzero exits, process-start errors, ambiguous reservations, local environment
+failures, and every other error are terminal. Durable results are reused on resume without another
+provider call.
+
+The worst-case ceiling is `2 attempts × 2 arms × 66 horizon turns = 264` calls. With 178 previously
+charged calls, the sealed maximum is 442 of the authorized global 450, leaving eight calls of
+headroom. Validate or execute with an exact acknowledgement:
+
+```bash
+"$ASSURANCE_PYTHON" tools/run_spade_agy_outcome_replay.py run \
+  --plan .assay/spade-experiments/outcome-replay-v5-plan.json \
+  --output-root "$SPADE_AGY_V5_RUN_ROOT"
+
+"$ASSURANCE_PYTHON" tools/run_spade_agy_outcome_replay.py run \
+  --plan .assay/spade-experiments/outcome-replay-v5-plan.json \
+  --output-root "$SPADE_AGY_V5_RUN_ROOT" \
+  --execute \
+  --acknowledge-call-cap 264
+```
+
+Assay is unreachable until all 54 same-attempt pair resolutions and exactly 108 selected outcomes
+exist. Its request and task metadata bind the source plan/cohort/import, both offline assurance
+receipts, pair-resolution manifest, and pre-Assay ledger. A physical `model.lock` is rejected even
+if an integration object reports no lock. This remains exploratory post-v4 calibration; implementing
+the runner does not mean v5 has launched or that the prompt treatment improves outcomes.
+
 ## Verification
 
 Run the focused SPADE integration tests from this repository:
@@ -218,9 +290,11 @@ python -m pytest -q \
   tests/test_proofpack_bridge.py \
   tests/test_game_utils.py \
   tests/test_live_spade_eval.py \
-  tests/test_spade_agy_experiment.py
+  tests/test_spade_agy_experiment.py \
+  tests/test_spade_agy_outcome_replay.py
 python tools/run_live_spade_eval.py --help
 python tools/run_spade_agy_experiment.py --help
+python tools/run_spade_agy_outcome_replay.py --help
 ```
 
 ProofPack and Assay maintain their own focused suites and repository-level `make verify` commands.
