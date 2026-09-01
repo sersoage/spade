@@ -209,7 +209,7 @@ environment interface, skill and difficulty instructions, sealed schedule, quali
 analysis remain unchanged. No success or improvement claim is warranted until a new separately
 sealed run completes its full cohort and Assay decision.
 
-### Prospective v5 outcome-only replay
+### v5 outcome-only replay protocol and incomplete run
 
 The v4 prompt-treatment run produced a complete 18-cluster pre-outcome cohort, then stopped
 fail-closed at call 89 when the first unhinted `c003` actor call returned an empty AGY response.
@@ -287,8 +287,21 @@ an exact acknowledgement:
 Assay is unreachable until all 54 same-attempt pair resolutions and exactly 108 selected outcomes
 exist. Its request and task metadata bind the source plan/cohort/import, both offline assurance
 receipts, pair-resolution manifest, and pre-Assay ledger. A physical `model.lock` is rejected even
-if an integration object reports no lock. This remains exploratory post-v4 calibration; implementing
-the runner does not mean v5 has launched or that the prompt treatment improves outcomes.
+if an integration object reports no lock.
+
+The authorized v5 plan, digest
+`sha256:12641def72937fa6e306de511ce3a3347c8bcce00f11683511a7a942b0f99e64`,
+was executed and stopped fail-closed after 27 AGY calls. Twenty-four calls succeeded and three
+returned an exact empty response. The first empty response, on `c003` seed 0, was recovered by a
+complete second pair attempt. On `c004` seed 42, attempt 1 failed on its hinted arm; attempt 2 then
+completed the hinted arm but failed on the unhinted arm, exhausting the two sealed slots. The
+successful c003 attempt-1 unhinted arm and c004 attempt-2 hinted arm remain ledgered but excluded.
+Eleven pairs have
+durable resolutions (22 eligible logical outcomes), all `1.0`/`1.0` ties in the ordered `c001`
+through partial-`c004` prefix. The run has no resolution manifest, Assay request, Assay result, or
+`model.lock`, and must not be resumed or pooled. Global recorded usage is 205 of 450 authorized
+calls. These partial ceiling results are descriptive only; v5 did not establish a hint benefit or
+that the prompt treatment improves SPADE.
 
 ## Verification
 
