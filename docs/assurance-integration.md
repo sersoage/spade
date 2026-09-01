@@ -235,7 +235,7 @@ SPADE_AGY_V5_RUN_ROOT="$(pwd)/.assay/spade-experiments/runs"
   --output .assay/spade-experiments/outcome-replay-v5-plan.json \
   --output-root "$SPADE_AGY_V5_RUN_ROOT" \
   --experiment-id spade-agy-v4-cohort-outcome-replay-v5 \
-  --total-call-cap 264
+  --total-call-cap 272
 ```
 
 The import binds the complete designer/hint call prefix and validated candidate, qualification,
@@ -243,13 +243,19 @@ probe, hint, selection, and cohort leaves. Unknown candidate leaves, orphan call
 symlinks, and actor/outcome/Assay imports fail closed. The imported bytes become the local resume
 authority, so later actor additions to the historical run cannot enter v5.
 
-The evaluation horizon is derived only from locked probe solutions, before considering any v4
-actor result: a boxed list uses one turn per item, a multiline string one turn per nonblank line,
-and a scalar one turn. All three seeds must agree. For this cohort,
-`c008-strategic-planning-hard` has horizon 5 and the other 17 clusters have horizon 1. Every
-environment is revalidated under the original five-turn ProofPack V0-V4 contract. Separately, a
-twice-per-seed deterministic oracle replay establishes actor-horizon viability; that receipt is not
-represented as full ProofPack qualification.
+The evaluation horizon is selected without consulting any v4 actor result. Locked probe solutions
+first establish an oracle-action lower bound: a boxed list uses one action per item, a multiline
+string one per nonblank line, and a scalar one action. Starting at that bound, the plan builder
+searches through the source five-turn limit. Every candidate horizon is replayed twice for all three
+locked seeds, and each pair of full traces must be deterministic and match the locked probes. A
+candidate is selected only when every seed ends with reward at least one, terminates, and does not
+truncate. Rejected-horizon traces remain sealed to prove minimality.
+For this cohort, `c003-mathematical-reasoning-medium` and
+`c004-mathematical-reasoning-hard` require horizon 2 because their correct action simultaneously
+terminates and truncates when the environment limit is 1. `c008-strategic-planning-hard` requires
+horizon 5, and the other 15 clusters require horizon 1. Every environment is also revalidated under
+the original five-turn ProofPack V0-V4 contract. The horizon search is a separate viability receipt,
+not full ProofPack qualification.
 
 The 54 `(cluster, seed)` pairs retain their counterbalanced arm order. Each has at most two attempt
 slots. Only an exact empty response or either exact AGY timeout form may open attempt 2. A failure
@@ -259,9 +265,12 @@ action. Generic nonzero exits, process-start errors, ambiguous reservations, loc
 failures, and every other error are terminal. Durable results are reused on resume without another
 provider call.
 
-The worst-case ceiling is `2 attempts × 2 arms × 66 horizon turns = 264` calls. With 178 previously
-charged calls, the sealed maximum is 442 of the authorized global 450, leaving eight calls of
-headroom. Validate or execute with an exact acknowledgement:
+The theoretical worst-case ceiling is `2 attempts × 2 arms × 72 pair-horizon turns = 288` calls.
+Only 272 calls remain after the 178 previously charged calls, so the production plan seals a hard
+272-call cap: at most 450 of 450 authorized calls and zero headroom. The ceiling is therefore not
+fully funded. If whole-pair replacements consume the cap before all 54 pairs complete, the run is
+incomplete and Assay remains unreachable; completion is not guaranteed. Validate or execute with
+an exact acknowledgement:
 
 ```bash
 "$ASSURANCE_PYTHON" tools/run_spade_agy_outcome_replay.py run \
@@ -272,7 +281,7 @@ headroom. Validate or execute with an exact acknowledgement:
   --plan .assay/spade-experiments/outcome-replay-v5-plan.json \
   --output-root "$SPADE_AGY_V5_RUN_ROOT" \
   --execute \
-  --acknowledge-call-cap 264
+  --acknowledge-call-cap 272
 ```
 
 Assay is unreachable until all 54 same-attempt pair resolutions and exactly 108 selected outcomes

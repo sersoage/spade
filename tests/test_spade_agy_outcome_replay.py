@@ -80,7 +80,7 @@ class _Env:
         self.turn += 1
         required = 5 if self.number == 8 else 1
         terminated = self.turn >= required
-        truncated = self.turn >= self.max_turns and not terminated
+        truncated = self.turn >= self.max_turns and (not terminated or self.number in {3, 4})
         return (
             f"state environment={self.number} seed={self.seed} turn={self.turn}",
             1.0 if terminated else 0.0,
@@ -339,19 +339,40 @@ def test_plan_seals_horizons_budget_and_excludes_v4_actor_evidence(tmp_path) -> 
     plan = fixture.plan
     horizons = {item["cluster_id"]: item["horizon"] for item in plan["cluster_horizons"]}
 
+    assert horizons["c003-mathematical-reasoning-medium"] == 2
+    assert horizons["c004-mathematical-reasoning-hard"] == 2
     assert horizons["c008-strategic-planning-hard"] == 5
-    assert set(horizons.values()) == {1, 5}
-    assert plan["configuration"]["computed_call_ceiling"] == 264
-    assert plan["configuration"]["total_call_cap"] == 264
+    assert set(horizons.values()) == {1, 2, 5}
+    assert sum(horizons.values()) == 24
+    assert plan["configuration"]["computed_call_ceiling"] == 288
+    assert plan["configuration"]["total_call_cap"] == 272
     assert plan["budget_context"] == {
         "prior_charged_calls": 178,
         "authorized_global_call_cap": 450,
-        "planned_max_global_calls": 442,
-        "headroom_calls": 8,
-        "canonical_full_run": True,
+        "planned_max_global_calls": 450,
+        "headroom_calls": 0,
+        "canonical_authorized_run": True,
     }
     assert [item["ordinal"] for item in plan["outcome_schedule"]] == list(range(1, 109))
     assert len(plan["pair_schedule"]) == 54
+    viability = {item["cluster_id"]: item for item in plan["horizon_viability"]}
+    for cluster_id in (
+        "c003-mathematical-reasoning-medium",
+        "c004-mathematical-reasoning-hard",
+    ):
+        record = viability[cluster_id]
+        assert record["searched_horizons"] == [1, 2]
+        assert record["searches"][0]["all_seeds_viable"] is False
+        assert record["searches"][1]["all_seeds_viable"] is True
+        for seed_receipt in record["searches"][0]["seeds"].values():
+            assert seed_receipt["replay_count"] == 2
+            receipt = seed_receipt["deterministic_receipt"]
+            assert receipt["status"] == "not-viable"
+            assert receipt["trace"] is not None
+            final = receipt["trace"]["steps"][-1]
+            assert final["terminated"] is True
+            assert final["truncated"] is True
+    assert viability["c008-strategic-planning-hard"]["searched_horizons"] == [5]
     imported = [item["path"] for item in plan["source_evidence"]["import_manifest"]]
     assert not any(path.startswith("outcomes/") for path in imported)
     for path in imported:
@@ -392,6 +413,31 @@ def test_partial_import_is_completed_idempotently_without_provider_calls(tmp_pat
     assert provider_calls == 0
 
 
+def test_rejected_horizon_trace_must_be_deterministic(tmp_path) -> None:
+    fixture = _fixture(tmp_path)
+
+    class _NondeterministicRejectedEnv(_Env):
+        nonce = 0
+
+        def step(self, action: str):
+            result = list(super().step(action))
+            if self.number == 3 and self.max_turns == 1:
+                type(self).nonce += 1
+                result[4] = {"turn": self.turn, "nonce": type(self).nonce}
+            return tuple(result)
+
+    def target_factory(code, **kwargs):
+        return SimpleNamespace(
+            instantiate=lambda: _NondeterministicRejectedEnv(code, int(kwargs["max_turns"]))
+        )
+
+    dependencies = _dependencies(fixture.revisions, fixture.runtime, target_factory=target_factory)
+    snapshot = replay._validate_source_snapshot(fixture.source_run, dependencies=dependencies)
+    bounds = replay._derive_cluster_oracle_bounds(snapshot.plan, snapshot.selections)
+    with pytest.raises(base.ExperimentError, match="search is not deterministic"):
+        replay._search_horizon_viability(snapshot, bounds, dependencies)
+
+
 def test_whole_pair_retry_discards_sibling_and_resume_makes_no_duplicate_calls(
     tmp_path,
 ) -> None:
@@ -418,7 +464,7 @@ def test_whole_pair_retry_discards_sibling_and_resume_makes_no_duplicate_calls(
             fixture.plan_path,
             fixture.output_root,
             execute=True,
-            acknowledged_call_cap=264,
+            acknowledged_call_cap=272,
             dependencies=dependencies,
         )
     )
@@ -450,7 +496,7 @@ def test_whole_pair_retry_discards_sibling_and_resume_makes_no_duplicate_calls(
             fixture.plan_path,
             fixture.output_root,
             execute=True,
-            acknowledged_call_cap=264,
+            acknowledged_call_cap=272,
             dependencies=_dependencies(
                 fixture.revisions,
                 fixture.runtime,
@@ -500,7 +546,7 @@ def test_redigested_schedule_cap_and_import_tampering_fail_validation(tmp_path) 
     fixture = _fixture(tmp_path)
 
     bad_cap = json.loads(json.dumps(fixture.plan))
-    bad_cap["configuration"]["computed_call_ceiling"] = 263
+    bad_cap["configuration"]["computed_call_ceiling"] = 287
     _redigest_plan(bad_cap)
     with pytest.raises(base.ExperimentError, match="computed call ceiling"):
         replay.validate_plan(bad_cap)
@@ -523,6 +569,64 @@ def test_redigested_schedule_cap_and_import_tampering_fail_validation(tmp_path) 
     _redigest_plan(bad_import)
     with pytest.raises(base.ExperimentError, match="actor/outcome/Assay"):
         replay.validate_plan(bad_import)
+
+    bad_rejected_trace = json.loads(json.dumps(fixture.plan))
+    viability_record = bad_rejected_trace["horizon_viability"][2]
+    seed_record = next(iter(viability_record["searches"][0]["seeds"].values()))
+    receipt = seed_record["deterministic_receipt"]
+    assert receipt["status"] == "not-viable"
+    receipt["trace"]["solution"] = "tampered rejected-horizon solution"
+    receipt["trace"]["oracle_actions"][0] = r"\boxed{tampered rejected-horizon solution}"
+    receipt["trace"]["steps"][0]["action"] = r"\boxed{tampered rejected-horizon solution}"
+    receipt["trace_digest"] = base._digest(receipt["trace"])
+    seed_record["receipt_digest"] = base._digest(receipt)
+    viability_body = {
+        key: value for key, value in viability_record.items() if key != "record_digest"
+    }
+    viability_record["record_digest"] = base._digest(viability_body)
+    bad_rejected_trace["horizon_viability_digest"] = base._digest(
+        bad_rejected_trace["horizon_viability"]
+    )
+    _redigest_plan(bad_rejected_trace)
+    with pytest.raises(base.ExperimentError, match="locked probe digests"):
+        replay.validate_plan(bad_rejected_trace)
+
+    bad_rejected_action = json.loads(json.dumps(fixture.plan))
+    viability_record = bad_rejected_action["horizon_viability"][2]
+    seed_record = next(iter(viability_record["searches"][0]["seeds"].values()))
+    receipt = seed_record["deterministic_receipt"]
+    receipt["trace"]["oracle_actions"][0] = r"\boxed{evil}"
+    receipt["trace"]["steps"][0]["action"] = r"\boxed{evil}"
+    receipt["trace_digest"] = base._digest(receipt["trace"])
+    seed_record["receipt_digest"] = base._digest(receipt)
+    viability_body = {
+        key: value for key, value in viability_record.items() if key != "record_digest"
+    }
+    viability_record["record_digest"] = base._digest(viability_body)
+    bad_rejected_action["horizon_viability_digest"] = base._digest(
+        bad_rejected_action["horizon_viability"]
+    )
+    _redigest_plan(bad_rejected_action)
+    with pytest.raises(base.ExperimentError, match="locked solution"):
+        replay.validate_plan(bad_rejected_action)
+
+    bad_rejected_chain = json.loads(json.dumps(fixture.plan))
+    viability_record = bad_rejected_chain["horizon_viability"][2]
+    seed_record = next(iter(viability_record["searches"][0]["seeds"].values()))
+    receipt = seed_record["deterministic_receipt"]
+    receipt["trace"]["steps"][0]["pre_observation"] = "disconnected"
+    receipt["trace_digest"] = base._digest(receipt["trace"])
+    seed_record["receipt_digest"] = base._digest(receipt)
+    viability_body = {
+        key: value for key, value in viability_record.items() if key != "record_digest"
+    }
+    viability_record["record_digest"] = base._digest(viability_body)
+    bad_rejected_chain["horizon_viability_digest"] = base._digest(
+        bad_rejected_chain["horizon_viability"]
+    )
+    _redigest_plan(bad_rejected_chain)
+    with pytest.raises(base.ExperimentError, match="observation chain"):
+        replay.validate_plan(bad_rejected_chain)
 
 
 def test_exact_retry_classifier_is_narrow() -> None:
@@ -593,7 +697,7 @@ def test_fatal_environment_is_terminal_and_resume_spends_zero_calls(tmp_path) ->
         def factory(code, **kwargs):
             nonlocal instantiations
             instantiations += 1
-            environment_type = _FailingEnv if instantiations > 108 else _Env
+            environment_type = _FailingEnv if instantiations > 120 else _Env
             return SimpleNamespace(
                 instantiate=lambda: environment_type(code, int(kwargs["max_turns"]))
             )
@@ -694,7 +798,7 @@ def test_physical_model_lock_forces_failed_assay_result(tmp_path) -> None:
                 fixture.plan_path,
                 fixture.output_root,
                 execute=True,
-                acknowledged_call_cap=264,
+                acknowledged_call_cap=272,
                 dependencies=_dependencies(
                     fixture.revisions,
                     fixture.runtime,

@@ -33,9 +33,9 @@ if str(ROOT_DIR) not in sys.path:
 from tools import run_spade_agy_experiment as base  # noqa: E402
 
 
-PLAN_SCHEMA = "spade-agy-outcome-replay-plan/v1"
-RUN_SCHEMA = "spade-agy-outcome-replay-run/v1"
-COHORT_SCHEMA = "spade-agy-imported-cohort-lock/v1"
+PLAN_SCHEMA = "spade-agy-outcome-replay-plan/v2"
+RUN_SCHEMA = "spade-agy-outcome-replay-run/v2"
+COHORT_SCHEMA = "spade-agy-imported-cohort-lock/v2"
 CALL_REQUEST_SCHEMA = "spade-agy-outcome-replay-call-request/v1"
 CALL_RESULT_SCHEMA = "spade-agy-outcome-replay-call-result/v1"
 TURN_SCHEMA = "spade-agy-outcome-replay-turn/v1"
@@ -45,16 +45,16 @@ PAIR_RESOLUTION_SCHEMA = "spade-agy-outcome-replay-pair-resolution/v1"
 RESOLUTION_MANIFEST_SCHEMA = "spade-agy-outcome-replay-resolution-manifest/v1"
 OUTCOME_REFERENCE_SCHEMA = "spade-agy-outcome-replay-selected-outcome/v1"
 QUALIFICATION_REVALIDATION_SCHEMA = "spade-agy-qualification-revalidation/v1"
-HORIZON_VIABILITY_SCHEMA = "spade-agy-actor-horizon-viability/v1"
+HORIZON_VIABILITY_SCHEMA = "spade-agy-actor-horizon-viability/v2"
 ASSAY_REQUEST_SCHEMA = "spade-agy-outcome-replay-assay-request/v1"
 
-PROTOCOL_ID = "spade-agy-v4-cohort-outcome-replay/v1"
+PROTOCOL_ID = "spade-agy-v4-cohort-outcome-replay/v2"
 CANONICAL_MODEL = "gemini-3.1-pro-high"
 CANONICAL_TIMEOUT_SECONDS = 180.0
 SOURCE_MAX_TURNS = 5
 PAIR_ATTEMPTS = 2
 ARMS = ("unhinted", "hinted")
-HORIZON_POLICY_ID = "locked-probe-boxed-oracle-horizon/v1"
+HORIZON_POLICY_ID = "locked-probe-minimum-viable-horizon/v2"
 IMPORT_ROOT = "imported-v4"
 PRIOR_CHARGED_CALLS = 178
 AUTHORIZED_GLOBAL_CALL_CAP = 450
@@ -611,34 +611,46 @@ def _boxed_oracle_actions(solution: Any) -> list[str]:
     return actions
 
 
-def _derive_cluster_horizons(
+def _derive_cluster_oracle_bounds(
     source_plan: Mapping[str, Any], selections: Mapping[str, Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
     values: list[dict[str, Any]] = []
     for cluster in source_plan["cluster_schedule"]:
         cluster_id = str(cluster["cluster_id"])
         selection = selections[cluster_id]
-        seed_horizons: dict[str, int] = {}
+        seed_action_counts: dict[str, int] = {}
+        probe_digests: dict[str, str] = {}
+        observation_digests: dict[str, str] = {}
         solution_digests: dict[str, str] = {}
         for seed in source_plan["evaluation_seeds"]:
             probe = selection["probes"][str(seed)]
+            if probe["observation_digest"] != base._digest(probe["observation"]):
+                raise base.ExperimentError(
+                    f"locked observation digest mismatch: {cluster_id}/{seed}"
+                )
             if probe["solution_digest"] != base._digest(probe["solution"]):
                 raise base.ExperimentError(f"locked solution digest mismatch: {cluster_id}/{seed}")
             actions = _boxed_oracle_actions(probe["solution"])
-            seed_horizons[str(seed)] = max(1, len(actions))
+            seed_action_counts[str(seed)] = max(1, len(actions))
+            probe_digests[str(seed)] = base._digest(probe)
+            observation_digests[str(seed)] = str(probe["observation_digest"])
             solution_digests[str(seed)] = str(probe["solution_digest"])
-        horizon = max(seed_horizons.values())
-        if len(set(seed_horizons.values())) != 1:
+        oracle_action_bound = max(seed_action_counts.values())
+        if len(set(seed_action_counts.values())) != 1:
             raise base.ExperimentError(
-                f"locked oracle horizons disagree across seeds for {cluster_id}"
+                f"locked oracle action counts disagree across seeds for {cluster_id}"
             )
-        if horizon > int(source_plan["configuration"]["max_turns"]):
-            raise base.ExperimentError(f"locked oracle horizon exceeds source limit: {cluster_id}")
+        if oracle_action_bound > int(source_plan["configuration"]["max_turns"]):
+            raise base.ExperimentError(
+                f"locked oracle action bound exceeds source limit: {cluster_id}"
+            )
         values.append(
             {
                 "cluster_id": cluster_id,
-                "horizon": horizon,
-                "seed_horizons": seed_horizons,
+                "oracle_action_bound": oracle_action_bound,
+                "seed_oracle_action_counts": seed_action_counts,
+                "probe_digests": probe_digests,
+                "observation_digests": observation_digests,
                 "solution_digests": solution_digests,
             }
         )
@@ -706,8 +718,8 @@ def _viability_trace(
 ) -> dict[str, Any]:
     probe = selection["probes"][str(seed)]
     actions = _boxed_oracle_actions(probe["solution"])
-    if len(actions) != horizon:
-        raise base.ExperimentError("locked oracle action count differs from cluster horizon")
+    if len(actions) > horizon:
+        raise base.ExperimentError("locked oracle action count exceeds candidate horizon")
     target = target_factory(
         selection["code"],
         action_format="boxed",
@@ -744,9 +756,13 @@ def _viability_trace(
                 }
             )
             observation = post
-        if not terminated or truncated or steps[-1]["reward"] < 1.0:
-            raise base.ExperimentError(
-                "actor-horizon oracle did not terminate successfully within its bound"
+        viable = bool(terminated) and not bool(truncated) and steps[-1]["reward"] >= 1.0
+        failure_reason = None
+        if not viable:
+            failure_reason = (
+                "actor-horizon oracle was not viable: "
+                f"terminated={bool(terminated)} truncated={bool(truncated)} "
+                f"final_reward={steps[-1]['reward']}"
             )
         return {
             "initial_observation": str(probe["observation"]),
@@ -754,6 +770,8 @@ def _viability_trace(
             "solution": probe["solution"],
             "oracle_actions": actions,
             "steps": steps,
+            "viable": viable,
+            "failure_reason": failure_reason,
         }
     finally:
         close = getattr(env, "close", None)
@@ -761,51 +779,98 @@ def _viability_trace(
             close()
 
 
-def _horizon_viability_records(
-    snapshot: SourceSnapshot,
-    cluster_horizons: Sequence[Mapping[str, Any]],
-    dependencies: base.RunnerDependencies,
-) -> list[dict[str, Any]]:
-    horizon_by_cluster = {
-        str(item["cluster_id"]): int(item["horizon"]) for item in cluster_horizons
+def _viability_attempt_receipt(
+    *,
+    selection: Mapping[str, Any],
+    seed: int,
+    horizon: int,
+    timeout_seconds: float,
+    target_factory: Any,
+) -> dict[str, Any]:
+    trace = _viability_trace(
+        selection=selection,
+        seed=seed,
+        horizon=horizon,
+        timeout_seconds=timeout_seconds,
+        target_factory=target_factory,
+    )
+    return {
+        "status": "viable" if trace["viable"] else "not-viable",
+        "trace": trace,
+        "trace_digest": base._digest(trace),
     }
+
+
+def _search_horizon_viability(
+    snapshot: SourceSnapshot,
+    oracle_bounds: Sequence[Mapping[str, Any]],
+    dependencies: base.RunnerDependencies,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    bound_by_cluster = {str(item["cluster_id"]): item for item in oracle_bounds}
     timeout_seconds = float(snapshot.plan["configuration"]["qualification_timeout_seconds"])
+    source_max_turns = int(snapshot.plan["configuration"]["max_turns"])
+    horizons: list[dict[str, Any]] = []
     records: list[dict[str, Any]] = []
     for cluster in snapshot.plan["cluster_schedule"]:
         cluster_id = str(cluster["cluster_id"])
         selection = snapshot.selections[cluster_id]
-        horizon = horizon_by_cluster[cluster_id]
-        seeds: dict[str, Any] = {}
-        for seed in snapshot.plan["evaluation_seeds"]:
-            traces = [
-                _viability_trace(
-                    selection=selection,
-                    seed=seed,
-                    horizon=horizon,
-                    timeout_seconds=timeout_seconds,
-                    target_factory=dependencies.target_factory,
-                )
-                for _replay in range(2)
-            ]
-            if traces[0] != traces[1]:
-                raise base.ExperimentError(
-                    f"actor-horizon replay is not deterministic: {cluster_id}/{seed}"
-                )
-            seeds[str(seed)] = {
-                "probe_digest": base._digest(selection["probes"][str(seed)]),
-                "trace": traces[0],
-                "trace_digest": base._digest(traces[0]),
-                "replay_count": 2,
-            }
+        bound = bound_by_cluster[cluster_id]
+        oracle_action_bound = int(bound["oracle_action_bound"])
+        searches: list[dict[str, Any]] = []
+        selected_horizon: int | None = None
+        for candidate_horizon in range(oracle_action_bound, source_max_turns + 1):
+            seeds: dict[str, Any] = {}
+            for seed in snapshot.plan["evaluation_seeds"]:
+                receipts = [
+                    _viability_attempt_receipt(
+                        selection=selection,
+                        seed=seed,
+                        horizon=candidate_horizon,
+                        timeout_seconds=timeout_seconds,
+                        target_factory=dependencies.target_factory,
+                    )
+                    for _replay in range(2)
+                ]
+                if receipts[0] != receipts[1]:
+                    raise base.ExperimentError(
+                        "actor-horizon search is not deterministic: "
+                        f"{cluster_id}/{seed}/h{candidate_horizon}"
+                    )
+                receipt = receipts[0]
+                seeds[str(seed)] = {
+                    "probe_digest": base._digest(selection["probes"][str(seed)]),
+                    "replay_count": 2,
+                    "viable": receipt["status"] == "viable",
+                    "deterministic_receipt": receipt,
+                    "receipt_digest": base._digest(receipt),
+                }
+            all_seeds_viable = all(bool(item["viable"]) for item in seeds.values())
+            searches.append(
+                {
+                    "candidate_horizon": candidate_horizon,
+                    "all_seeds_viable": all_seeds_viable,
+                    "seeds": seeds,
+                }
+            )
+            if all_seeds_viable:
+                selected_horizon = candidate_horizon
+                break
+        if selected_horizon is None:
+            raise base.ExperimentError(f"no viable actor horizon within source limit: {cluster_id}")
+        horizon = {**dict(bound), "horizon": selected_horizon}
+        horizons.append(horizon)
         body = {
             "schema_version": HORIZON_VIABILITY_SCHEMA,
             "cluster_id": cluster_id,
             "code_digest": selection["code_digest"],
-            "horizon": horizon,
-            "seeds": seeds,
+            "oracle_action_bound": oracle_action_bound,
+            "source_max_turns": source_max_turns,
+            "horizon": selected_horizon,
+            "searched_horizons": [int(item["candidate_horizon"]) for item in searches],
+            "searches": searches,
         }
         records.append({**body, "record_digest": base._digest(body)})
-    return records
+    return horizons, records
 
 
 def _build_schedules(
@@ -894,14 +959,23 @@ def build_outcome_replay_plan(
     if snapshot.cohort["cohort_digest"] != expected_source_cohort_digest:
         raise base.ExperimentError("source cohort digest differs from explicit authorization")
     resolved_dependencies = _source_dependencies(snapshot.plan, dependencies)
-    horizons = _derive_cluster_horizons(snapshot.plan, snapshot.selections)
+    oracle_bounds = _derive_cluster_oracle_bounds(snapshot.plan, snapshot.selections)
+    qualification = _qualification_revalidations(snapshot, resolved_dependencies)
+    horizons, viability = _search_horizon_viability(snapshot, oracle_bounds, resolved_dependencies)
     outcomes, pairs = _build_schedules(snapshot.plan, horizons)
     ceiling = sum(len(slot["call_schedule"]) for pair in pairs for slot in pair["attempt_slots"])
-    cap = ceiling if total_call_cap is None else total_call_cap
-    if isinstance(cap, bool) or not isinstance(cap, int) or not 1 <= cap <= ceiling:
-        raise base.ExperimentError(f"total_call_cap must be within 1..{ceiling}")
-    qualification = _qualification_revalidations(snapshot, resolved_dependencies)
-    viability = _horizon_viability_records(snapshot, horizons, resolved_dependencies)
+    authorized_remaining = AUTHORIZED_GLOBAL_CALL_CAP - PRIOR_CHARGED_CALLS
+    canonical_cap = min(ceiling, authorized_remaining)
+    cap = canonical_cap if total_call_cap is None else total_call_cap
+    if (
+        isinstance(cap, bool)
+        or not isinstance(cap, int)
+        or not 1 <= cap <= ceiling
+        or cap > authorized_remaining
+    ):
+        raise base.ExperimentError(
+            f"total_call_cap must be within 1..{min(ceiling, authorized_remaining)}"
+        )
     revisions = dict(source_revisions or base._source_revisions())
     runtime = dict(runtime_identity or base._runtime_identity())
     manifest_digest = base._digest(snapshot.manifest)
@@ -925,11 +999,14 @@ def build_outcome_replay_plan(
     }
     horizon_policy = {
         "policy_id": HORIZON_POLICY_ID,
-        "basis": "locked pre-outcome probe solution shape only",
+        "basis": "locked pre-outcome probes plus deterministic offline environment replay",
         "boxed_list_rule": "one turn per list item",
         "boxed_multiline_rule": "one turn per nonblank line",
         "boxed_scalar_rule": "one turn",
-        "seed_consistency_required": True,
+        "oracle_action_count_is_lower_bound": True,
+        "search_rule": "first twice-deterministic all-seed viable horizon through source max_turns",
+        "viability_rule": "locked probe match, final reward at least one, terminated and not truncated",
+        "replay_count_per_seed_horizon": 2,
         "source_actor_outcomes_consulted": False,
     }
     config = snapshot.plan["configuration"]
@@ -972,7 +1049,7 @@ def build_outcome_replay_plan(
             "authorized_global_call_cap": AUTHORIZED_GLOBAL_CALL_CAP,
             "planned_max_global_calls": PRIOR_CHARGED_CALLS + cap,
             "headroom_calls": AUTHORIZED_GLOBAL_CALL_CAP - PRIOR_CHARGED_CALLS - cap,
-            "canonical_full_run": cap == ceiling,
+            "canonical_authorized_run": cap == canonical_cap,
         },
         "horizon_policy": horizon_policy,
         "cluster_horizons": horizons,
@@ -988,6 +1065,107 @@ def build_outcome_replay_plan(
     plan = {**body, "plan_digest": base._digest(body)}
     validate_plan(plan)
     return plan
+
+
+def _validate_viability_receipt(
+    receipt: Mapping[str, Any], *, candidate_horizon: int, oracle_action_bound: int
+) -> bool:
+    base._require_keys(
+        receipt,
+        {
+            "status",
+            "trace",
+            "trace_digest",
+        },
+        "actor-horizon deterministic receipt",
+    )
+    if receipt["status"] not in {"viable", "not-viable"}:
+        raise base.ExperimentError("actor-horizon receipt status is invalid")
+    trace = receipt["trace"]
+    if not isinstance(trace, dict):
+        raise base.ExperimentError("actor-horizon receipt lacks its full trace")
+    if receipt["trace_digest"] != base._digest(trace):
+        raise base.ExperimentError("actor-horizon receipt trace binding is invalid")
+    base._require_keys(
+        trace,
+        {
+            "initial_observation",
+            "reset_info",
+            "solution",
+            "oracle_actions",
+            "steps",
+            "viable",
+            "failure_reason",
+        },
+        "actor-horizon trace",
+    )
+    if not isinstance(trace["initial_observation"], str):
+        raise base.ExperimentError("actor-horizon initial observation must be text")
+    actions = trace["oracle_actions"]
+    steps = trace["steps"]
+    if (
+        not isinstance(actions, list)
+        or len(actions) != oracle_action_bound
+        or any(not isinstance(action, str) or not action for action in actions)
+        or not isinstance(steps, list)
+        or len(steps) != oracle_action_bound
+        or oracle_action_bound > candidate_horizon
+    ):
+        raise base.ExperimentError("actor-horizon trace does not bind its oracle actions")
+    if actions != _boxed_oracle_actions(trace["solution"]):
+        raise base.ExperimentError("actor-horizon actions differ from the locked solution")
+    for turn, (action, step) in enumerate(zip(actions, steps), start=1):
+        if not isinstance(step, dict):
+            raise base.ExperimentError("actor-horizon trace step must be an object")
+        base._require_keys(
+            step,
+            {
+                "turn",
+                "action",
+                "pre_observation",
+                "post_observation",
+                "reward",
+                "terminated",
+                "truncated",
+                "info",
+            },
+            "actor-horizon trace step",
+        )
+        if (
+            step["turn"] != turn
+            or step["action"] != action
+            or not isinstance(step["pre_observation"], str)
+            or not isinstance(step["post_observation"], str)
+            or not isinstance(step["terminated"], bool)
+            or not isinstance(step["truncated"], bool)
+        ):
+            raise base.ExperimentError("actor-horizon trace step is malformed")
+        expected_pre = (
+            trace["initial_observation"] if turn == 1 else steps[turn - 2]["post_observation"]
+        )
+        if step["pre_observation"] != expected_pre:
+            raise base.ExperimentError("actor-horizon observation chain is invalid")
+        base._finite_number(step["reward"], "actor-horizon trace reward")
+        if turn < len(steps) and (step["terminated"] or step["truncated"]):
+            raise base.ExperimentError("actor-horizon trace continues after episode end")
+    final = steps[-1]
+    final_reward = base._finite_number(final["reward"], "actor-horizon final reward")
+    viable = final["terminated"] is True and final["truncated"] is False and final_reward >= 1.0
+    failure_reason = None
+    if not viable:
+        failure_reason = (
+            "actor-horizon oracle was not viable: "
+            f"terminated={final['terminated']} truncated={final['truncated']} "
+            f"final_reward={final_reward}"
+        )
+    if (
+        not isinstance(trace["viable"], bool)
+        or trace["viable"] is not viable
+        or trace["failure_reason"] != failure_reason
+        or receipt["status"] != ("viable" if viable else "not-viable")
+    ):
+        raise base.ExperimentError("actor-horizon viability decision is invalid")
+    return viable
 
 
 def validate_plan(plan: Mapping[str, Any]) -> None:
@@ -1200,11 +1378,14 @@ def validate_plan(plan: Mapping[str, Any]) -> None:
     policy = plan["horizon_policy"]
     expected_policy = {
         "policy_id": HORIZON_POLICY_ID,
-        "basis": "locked pre-outcome probe solution shape only",
+        "basis": "locked pre-outcome probes plus deterministic offline environment replay",
         "boxed_list_rule": "one turn per list item",
         "boxed_multiline_rule": "one turn per nonblank line",
         "boxed_scalar_rule": "one turn",
-        "seed_consistency_required": True,
+        "oracle_action_count_is_lower_bound": True,
+        "search_rule": "first twice-deterministic all-seed viable horizon through source max_turns",
+        "viability_rule": "locked probe match, final reward at least one, terminated and not truncated",
+        "replay_count_per_seed_horizon": 2,
         "source_actor_outcomes_consulted": False,
     }
     if policy != expected_policy:
@@ -1220,23 +1401,40 @@ def validate_plan(plan: Mapping[str, Any]) -> None:
             raise base.ExperimentError("cluster horizon entry must be an object")
         base._require_keys(
             item,
-            {"cluster_id", "horizon", "seed_horizons", "solution_digests"},
+            {
+                "cluster_id",
+                "horizon",
+                "oracle_action_bound",
+                "seed_oracle_action_counts",
+                "probe_digests",
+                "observation_digests",
+                "solution_digests",
+            },
             "cluster horizon entry",
         )
         cluster_id = str(cluster["cluster_id"])
         if item["cluster_id"] != cluster_id:
             raise base.ExperimentError("cluster horizon order differs from cluster schedule")
         horizon = base._positive_int(item["horizon"], "cluster horizon")
+        oracle_action_bound = base._positive_int(item["oracle_action_bound"], "oracle action bound")
+        if not oracle_action_bound <= horizon <= SOURCE_MAX_TURNS:
+            raise base.ExperimentError("cluster horizon is outside its sealed search range")
         expected_seed_keys = {str(seed) for seed in plan["evaluation_seeds"]}
         if (
-            set(item["seed_horizons"]) != expected_seed_keys
+            set(item["seed_oracle_action_counts"]) != expected_seed_keys
+            or set(item["probe_digests"]) != expected_seed_keys
+            or set(item["observation_digests"]) != expected_seed_keys
             or set(item["solution_digests"]) != expected_seed_keys
         ):
             raise base.ExperimentError("cluster horizon seed evidence is incomplete")
-        if set(item["seed_horizons"].values()) != {horizon}:
-            raise base.ExperimentError("cluster horizon seed values disagree")
-        for digest in item["solution_digests"].values():
-            base._sha256_text(digest, "locked solution digest")
+        for seed, count in item["seed_oracle_action_counts"].items():
+            if base._positive_int(count, f"oracle action count {cluster_id}/{seed}") != (
+                oracle_action_bound
+            ):
+                raise base.ExperimentError("cluster oracle action counts disagree across seeds")
+        for field in ("probe_digests", "observation_digests", "solution_digests"):
+            for digest in item[field].values():
+                base._sha256_text(digest, f"locked {field} digest")
         horizon_ids.append(cluster_id)
 
     source_schedule = base._outcome_schedule(clusters, plan["evaluation_seeds"])
@@ -1255,15 +1453,22 @@ def validate_plan(plan: Mapping[str, Any]) -> None:
     if config["computed_call_ceiling"] != ceiling:
         raise base.ExperimentError("computed call ceiling differs from pair horizons")
     cap = config["total_call_cap"]
-    if isinstance(cap, bool) or not isinstance(cap, int) or not 1 <= cap <= ceiling:
-        raise base.ExperimentError("total_call_cap exceeds the computed ceiling")
+    authorized_remaining = AUTHORIZED_GLOBAL_CALL_CAP - PRIOR_CHARGED_CALLS
+    if (
+        isinstance(cap, bool)
+        or not isinstance(cap, int)
+        or not 1 <= cap <= ceiling
+        or cap > authorized_remaining
+    ):
+        raise base.ExperimentError("total_call_cap exceeds its sealed authorization")
+    canonical_cap = min(ceiling, authorized_remaining)
     budget = plan["budget_context"]
     expected_budget = {
         "prior_charged_calls": PRIOR_CHARGED_CALLS,
         "authorized_global_call_cap": AUTHORIZED_GLOBAL_CALL_CAP,
         "planned_max_global_calls": PRIOR_CHARGED_CALLS + cap,
         "headroom_calls": AUTHORIZED_GLOBAL_CALL_CAP - PRIOR_CHARGED_CALLS - cap,
-        "canonical_full_run": cap == ceiling,
+        "canonical_authorized_run": cap == canonical_cap,
     }
     if budget != expected_budget or budget["planned_max_global_calls"] > AUTHORIZED_GLOBAL_CALL_CAP:
         raise base.ExperimentError("global call budget context is invalid")
@@ -1289,15 +1494,104 @@ def validate_plan(plan: Mapping[str, Any]) -> None:
                 if record.get("receipt_digest") != base._digest(record.get("receipt")):
                     raise base.ExperimentError("qualification receipt digest mismatch")
             else:
-                if record.get("horizon") != horizon_item["horizon"]:
+                base._require_keys(
+                    record,
+                    {
+                        "schema_version",
+                        "cluster_id",
+                        "code_digest",
+                        "oracle_action_bound",
+                        "source_max_turns",
+                        "horizon",
+                        "searched_horizons",
+                        "searches",
+                        "record_digest",
+                    },
+                    "actor-horizon viability record",
+                )
+                selected_horizon = int(horizon_item["horizon"])
+                oracle_action_bound = int(horizon_item["oracle_action_bound"])
+                if (
+                    record["horizon"] != selected_horizon
+                    or record["oracle_action_bound"] != oracle_action_bound
+                    or record["source_max_turns"] != SOURCE_MAX_TURNS
+                ):
                     raise base.ExperimentError("viability horizon differs from sealed horizon")
-                if set(record.get("seeds", {})) != {str(seed) for seed in plan["evaluation_seeds"]}:
-                    raise base.ExperimentError("viability receipt seed evidence is incomplete")
-                for seed_record in record["seeds"].values():
-                    if seed_record.get("replay_count") != 2 or seed_record.get(
-                        "trace_digest"
-                    ) != base._digest(seed_record.get("trace")):
-                        raise base.ExperimentError("viability trace binding is invalid")
+                expected_search = list(range(oracle_action_bound, selected_horizon + 1))
+                if record["searched_horizons"] != expected_search:
+                    raise base.ExperimentError("viability search is not a minimal prefix")
+                searches = record["searches"]
+                if not isinstance(searches, list) or len(searches) != len(expected_search):
+                    raise base.ExperimentError("viability search receipt inventory is invalid")
+                expected_seed_keys = {str(seed) for seed in plan["evaluation_seeds"]}
+                for search_index, (candidate_horizon, search) in enumerate(
+                    zip(expected_search, searches)
+                ):
+                    if not isinstance(search, dict):
+                        raise base.ExperimentError("viability search entry must be an object")
+                    base._require_keys(
+                        search,
+                        {"candidate_horizon", "all_seeds_viable", "seeds"},
+                        "viability search entry",
+                    )
+                    if search["candidate_horizon"] != candidate_horizon or not isinstance(
+                        search["all_seeds_viable"], bool
+                    ):
+                        raise base.ExperimentError("viability search horizon is invalid")
+                    seeds = search["seeds"]
+                    if not isinstance(seeds, dict) or set(seeds) != expected_seed_keys:
+                        raise base.ExperimentError("viability search seed evidence is incomplete")
+                    seed_viability: list[bool] = []
+                    for seed, seed_record in seeds.items():
+                        if not isinstance(seed_record, dict):
+                            raise base.ExperimentError("viability seed receipt must be an object")
+                        base._require_keys(
+                            seed_record,
+                            {
+                                "probe_digest",
+                                "replay_count",
+                                "viable",
+                                "deterministic_receipt",
+                                "receipt_digest",
+                            },
+                            "viability seed receipt",
+                        )
+                        base._sha256_text(seed_record["probe_digest"], "probe digest")
+                        receipt = seed_record["deterministic_receipt"]
+                        if not isinstance(receipt, dict):
+                            raise base.ExperimentError(
+                                "deterministic viability receipt must be an object"
+                            )
+                        viable = _validate_viability_receipt(
+                            receipt,
+                            candidate_horizon=candidate_horizon,
+                            oracle_action_bound=oracle_action_bound,
+                        )
+                        if (
+                            seed_record["replay_count"] != 2
+                            or not isinstance(seed_record["viable"], bool)
+                            or seed_record["viable"] is not viable
+                            or seed_record["receipt_digest"] != base._digest(receipt)
+                            or seed_record["probe_digest"] != horizon_item["probe_digests"][seed]
+                        ):
+                            raise base.ExperimentError("viability seed binding is invalid")
+                        if (
+                            base._digest(receipt["trace"]["initial_observation"])
+                            != horizon_item["observation_digests"][seed]
+                            or base._digest(receipt["trace"]["solution"])
+                            != horizon_item["solution_digests"][seed]
+                        ):
+                            raise base.ExperimentError(
+                                "viability trace differs from its locked probe digests"
+                            )
+                        seed_viability.append(viable)
+                    all_seeds_viable = all(seed_viability)
+                    if search["all_seeds_viable"] is not all_seeds_viable:
+                        raise base.ExperimentError("viability all-seed decision is invalid")
+                    if search_index < len(searches) - 1 and all_seeds_viable:
+                        raise base.ExperimentError("viability search continued after success")
+                    if search_index == len(searches) - 1 and not all_seeds_viable:
+                        raise base.ExperimentError("selected horizon is not all-seed viable")
         digest_field = f"{field}_digest"
         if plan[digest_field] != base._digest(records):
             raise base.ExperimentError(f"{field} aggregate digest mismatch")
@@ -1470,20 +1764,32 @@ class _ReplayEngine(base._Engine):
             )
             for cluster in source_plan["cluster_schedule"]
         }
-        derived = _derive_cluster_horizons(source_plan, selections)
-        if derived != self.plan["cluster_horizons"]:
-            raise base.ExperimentError("imported locked probes derive different actor horizons")
+        derived = _derive_cluster_oracle_bounds(source_plan, selections)
+        sealed_bounds = [
+            {
+                "cluster_id": item["cluster_id"],
+                "oracle_action_bound": item["oracle_action_bound"],
+                "seed_oracle_action_counts": item["seed_oracle_action_counts"],
+                "probe_digests": item["probe_digests"],
+                "observation_digests": item["observation_digests"],
+                "solution_digests": item["solution_digests"],
+            }
+            for item in self.plan["cluster_horizons"]
+        ]
+        if derived != sealed_bounds:
+            raise base.ExperimentError("imported locked probes derive different oracle bounds")
         return selections
 
     def _rerun_offline_assurance(self, snapshot: SourceSnapshot) -> None:
         qualification = _qualification_revalidations(snapshot, self.dependencies)
-        viability = _horizon_viability_records(
-            snapshot, self.plan["cluster_horizons"], self.dependencies
-        )
+        oracle_bounds = _derive_cluster_oracle_bounds(snapshot.plan, snapshot.selections)
+        horizons, viability = _search_horizon_viability(snapshot, oracle_bounds, self.dependencies)
         if qualification != self.plan["qualification_revalidations"]:
             raise base.ExperimentIncomplete("five-turn ProofPack revalidation differs from seal")
+        if horizons != self.plan["cluster_horizons"]:
+            raise base.ExperimentIncomplete("minimum viable actor horizons differ from seal")
         if viability != self.plan["horizon_viability"]:
-            raise base.ExperimentIncomplete("actor-horizon viability differs from seal")
+            raise base.ExperimentIncomplete("actor-horizon viability search differs from seal")
         for record in qualification:
             base._write_json(
                 self.run_dir / "qualification-revalidation" / f"{record['cluster_id']}.json",
