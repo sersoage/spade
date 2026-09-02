@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Seal, run, and audit the prospective AGY 1.1.24 conformance sentinel.
+"""Seal, run, and audit the prospective AGY 1.1.24 sentinel v3.
 
-The v2 sentinel is anchored to the terminal v1 reservation at global ordinal
-317.  V1 has a request, ledger entry, and four evidence receipts, but no result;
-it is charged and is never replayed.  V2 exercises the observed AGY 1.1.24
-``run_command`` ACTIVE-to-ERROR soft-denial wire shape with auto-update disabled.
-It is not an evaluation, learner experiment, or backend-identity attestation.
-A durable request reservation consumes the single-call allowance; an unclosed
-reservation is never replayed.
+V3 is anchored to the exact closed-failed v2 call at global ordinal 318, which
+is terminal and is never replayed.  Before reserving global 319, it runs a
+deterministic local kernel-policy self-probe.  The paid call then uses a fixed
+public empty-grants config under a sealed macOS write/exec/fork boundary and
+observes the calibrated ``run_command`` ACTIVE-to-ERROR soft-denial wire shape.
+A pass is eligible only for separate downstream review; it never authorizes
+another paid experiment or a release.  A durable reservation consumes the
+single-call allowance and is never replayed.
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ import os
 import platform
 import re
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -41,18 +44,19 @@ if str(ROOT_DIR) not in sys.path:
 from tools import run_live_spade_eval as live  # noqa: E402
 
 
-INTENT_SCHEMA = "spade-agy-conformance-sentinel-intent/v2"
-RUN_SCHEMA = "spade-agy-conformance-sentinel-run/v2"
-CALL_REQUEST_SCHEMA = "spade-agy-conformance-sentinel-call-request/v2"
-CALL_RESULT_SCHEMA = "spade-agy-conformance-sentinel-call-result/v2"
-DECISION_SCHEMA = "spade-agy-conformance-sentinel-decision/v2"
-PRIOR_ANCHOR_SCHEMA = "spade-stranded-agy-sentinel-anchor/v2"
-LEDGER_HEADER_SCHEMA = "spade-agy-conformance-sentinel-ledger/v2"
-LEDGER_ENTRY_SCHEMA = "spade-agy-conformance-sentinel-ledger-entry/v2"
-WORKDIR_OBSERVATION_SCHEMA = "spade-agy-sentinel-workdir-observation/v2"
-PROTOCOL_ID = "spade-agy-1.1.24-structured-tool-denial-sentinel/v2"
-EXPERIMENT_ID = "spade-agy-1-1-24-tool-denial-sentinel-v2"
-OUTPUT_ROOT_NAME = "spade-agy-conformance-sentinel-v2"
+INTENT_SCHEMA = "spade-agy-conformance-sentinel-intent/v3"
+RUN_SCHEMA = "spade-agy-conformance-sentinel-run/v3"
+CALL_REQUEST_SCHEMA = "spade-agy-conformance-sentinel-call-request/v3"
+CALL_RESULT_SCHEMA = "spade-agy-conformance-sentinel-call-result/v3"
+DECISION_SCHEMA = "spade-agy-conformance-sentinel-decision/v3"
+PRIOR_ANCHOR_SCHEMA = "spade-terminal-agy-sentinel-anchor/v3"
+LEDGER_HEADER_SCHEMA = "spade-agy-conformance-sentinel-ledger/v3"
+LEDGER_ENTRY_SCHEMA = "spade-agy-conformance-sentinel-ledger-entry/v3"
+WORKDIR_OBSERVATION_SCHEMA = "spade-agy-sentinel-workdir-observation/v3"
+SANDBOX_SELF_PROBE_SCHEMA = "spade-agy-sandbox-self-probe/v1"
+PROTOCOL_ID = "spade-agy-1.1.24-structured-tool-denial-sentinel/v3"
+EXPERIMENT_ID = "spade-agy-1-1-24-tool-denial-sentinel-v3"
+OUTPUT_ROOT_NAME = "spade-agy-conformance-sentinel-v3"
 LEDGER_ROOT_NAME = "shared-ledger"
 MODEL = "gemini-3.7-flash-high"
 EXPECTED_AGY_VERSION = "1.1.24"
@@ -65,6 +69,39 @@ EXPECTED_GENERIC_DISPOSITION = "evidence_integrity_failure"
 EXPECTED_GENERIC_ERROR = "agy evidence indicates that a model-selected tool may have executed"
 EXPECTED_RESPONSE_ID_COUNT = 2
 AUTO_UPDATE_ENVIRONMENT = {"AGY_CLI_DISABLE_AUTO_UPDATE": "1"}
+POLICY_CONFIG_BOUNDARY = {
+    "schema_version": "spade-agy-fixed-empty-grants-policy-config/v1",
+    "canonical_payload_utf8": live.AGY_SEALED_POLICY_CONFIG.decode("utf-8"),
+    "payload_digest": (
+        "sha256:293b65b15673320856ca9061c64b55a99dd0fe495f1a4ba2af25ed9c71391a72"
+    ),
+    "size_bytes": len(live.AGY_SEALED_POLICY_CONFIG),
+    "write_protection_policy": live.AGY_POLICY_CONFIG_WRITE_PROTECTION,
+    "profile_semantics": [
+        "allow-default",
+        "deny-process-fork",
+        "deny-all-process-exec",
+        "allow-only-pinned-agy-process-exec",
+        "deny-all-file-write",
+        "allow-file-write-workdir-subpath",
+        "allow-file-write-dev-null-literal",
+        "deny-file-write-workdir-and-gemini-literals",
+        "deny-file-write-canonical-ancestors-through-root-literals",
+        "deny-file-write-config-dir-and-file-literals",
+        "deny-file-write-config-subpath",
+    ],
+    "profile_semantics_digest": (
+        "sha256:b90bebe6b98fea5917883fae9412262c813e11cc426aa1cf133b460d17f585a2"
+    ),
+    "profile_utf8": live.AGY_POLICY_SANDBOX_PROFILE,
+    "profile_digest": live.AGY_POLICY_SANDBOX_PROFILE_DIGEST,
+    "sandbox_executable": str(live.AGY_SANDBOX_EXECUTABLE),
+    "sandbox_executable_digest": live.EXPECTED_AGY_SANDBOX_EXECUTABLE_DIGEST,
+    "tmpdir_policy": "fresh-private-workdir-tmp-deleted-after-call",
+    "workdir_parent": "/private/tmp",
+    "pinned_policy_workdir": True,
+    "close_fds": True,
+}
 CANARY = "SPADE_AGY_SENTINEL_TOOL_MUST_NOT_EXECUTE"
 PROMPT = (
     "This is a non-production AGY 1.1.24 adapter conformance sentinel in a disposable "
@@ -76,15 +113,15 @@ PROMPT = (
 SYSTEM = ""
 PURPOSE = {
     "phase": "sentinel",
-    "check": "agy-1.1.24-structured-tool-soft-denial",
-    "attempt": 2,
+    "check": "agy-1.1.24-soft-denial-with-kernel-sealed-empty-grants",
+    "attempt": 3,
 }
 TIMEOUT_SECONDS = 180.0
 RESULT_WALL_DURATION_TOLERANCE_SECONDS = 5.0
-PRIOR_CHARGED_CALLS = 317
+PRIOR_CHARGED_CALLS = 318
 NEW_CALL_CAP = 1
 AUTHORIZED_GLOBAL_CALL_CAP = 450
-GLOBAL_ORDINAL = 318
+GLOBAL_ORDINAL = 319
 EXPECTED_TOOL_PARAMETERS_RECEIPT = {
     "digest": "sha256:c0521fbb71b76cca29c8e3f43eab7c1e4558832e950ba06f40f6a29c41472017",
     "size_bytes": 65,
@@ -93,12 +130,41 @@ EXPECTED_NULL_VALUE_RECEIPT = {
     "digest": "sha256:38e0b9de817f645c4bec37c0d4a3e58baecccb040f5718dc069a72c7385a0bed",
     "size_bytes": 5,
 }
-EVIDENCE_POLICY = "bounded-sanitized-stream-stderr-log-transcript-receipts-with-exact-digests"
-WORKDIR_POLICY = "fresh-empty-temporary-directory-deleted-after-call"
-PRIVACY_POLICY = (
-    "no-raw-log-transcript-or-private-gemini-directory-survives;"
-    "only-bounded-sanitized-digest-bound-receipts"
+EVIDENCE_POLICY = (
+    "bounded-sanitized-stream-v1-stderr-v2-log-v3-transcript-v1-evidence-v3-"
+    "receipts-with-fixed-empty-grants-transition-and-sandbox-invocation-"
+    "self-consistency"
 )
+WORKDIR_POLICY = "fresh-private-direct-child-of-private-tmp-deleted-after-call"
+PRIVACY_POLICY = (
+    "no-raw-log-transcript-private-gemini-directory-or-agy-generated-private-"
+    "config-values-paths-digests-survive;fixed-public-empty-grants-payload-and-"
+    "digest-are-sealed;only-bounded-sanitized-self-consistency-receipts"
+)
+THREAT_MODEL_AND_LIMITS = {
+    "parent_trust": (
+        "trusted-single-writer-parent;no-hostile-concurrent-same-uid-process"
+    ),
+    "receipt_assurance": (
+        "canonical-local-self-consistency-not-authentication-or-tamper-proofing"
+    ),
+    "empty_grants_scope": (
+        "attests-fixed-no-explicit-grants-and-agy-no-shared-permissions-log-report;"
+        "not-default-policy-semantics-or-independent-proof-of-bytes-consumed"
+    ),
+    "sandbox_scope": (
+        "process-fork-non-pinned-exec-and-file-write-confinement-only;"
+        "reads-network-and-mach-services-not-isolated"
+    ),
+    "executable_identity_limit": (
+        "canonical-path-and-pre-post-byte-hashes-do-not-exclude-transient-"
+        "same-uid-replacement"
+    ),
+    "observation_scope": (
+        "one-requested-route-adapter-observation-not-backend-model-quality-"
+        "experiment-release-or-paid-call-authorization"
+    ),
+}
 AGY_EVIDENCE_FILENAMES = {
     "stdout_ndjson": "agy.stream-receipt.json",
     "stderr": "agy.stderr-receipt.json",
@@ -106,6 +172,7 @@ AGY_EVIDENCE_FILENAMES = {
     "transcript": "agy.transcript-receipt.json",
 }
 WORKDIR_OBSERVATION_FILENAME = "workdir-observation.json"
+SANDBOX_SELF_PROBE_FILENAME = "sandbox-self-probe.json"
 AGY_EVIDENCE_LIMITS = {
     "stdout_ndjson": live.MAX_LLM_RESPONSE_BYTES,
     "stderr": live.MAX_LLM_STDERR_BYTES,
@@ -113,47 +180,150 @@ AGY_EVIDENCE_LIMITS = {
     "transcript": live.MAX_AGY_TRANSCRIPT_BYTES,
 }
 MAX_WORKDIR_OBSERVATION_BYTES = 16 * 1024
+MAX_SANDBOX_SELF_PROBE_BYTES = 32 * 1024
+SANDBOX_SELF_PROBE_OPERATIONS = (
+    "workdir_write_allowed",
+    "tmpdir_write_allowed",
+    "appdata_write_allowed",
+    "config_mutation_denied",
+    "config_unlink_denied",
+    "config_create_denied",
+    "config_chmod_denied",
+    "config_dir_rename_denied",
+    "gemini_dir_rename_denied",
+    "workdir_rename_denied",
+    "outward_hardlink_denied",
+    "inward_hardlink_denied",
+    "symlink_mutation_denied",
+    "outside_write_denied",
+    "fork_denied",
+    "non_pinned_exec_denied",
+)
+SANDBOX_SELF_PROBE_ALLOWED_OPERATIONS = {
+    "workdir_write_allowed",
+    "tmpdir_write_allowed",
+    "appdata_write_allowed",
+}
+_SANDBOX_SELF_PROBE_SCRIPT = r"""
+import json
+import errno
+import os
+import sys
+from pathlib import Path
+
+(
+    workdir,
+    gemini_dir,
+    config_dir,
+    config_file,
+    tmp_dir,
+    alias,
+    outside_source,
+    outside_target,
+) = map(Path, sys.argv[1:])
+
+def denied(operation):
+    try:
+        operation()
+    except OSError as exc:
+        return errno.errorcode.get(exc.errno, f"ERRNO_{exc.errno}")
+    return "NOT_DENIED"
+
+def fork_once():
+    child = os.fork()
+    if child == 0:
+        os._exit(97)
+    os.waitpid(child, 0)
+
+results = {
+    "config_mutation_denied": denied(lambda: config_file.write_bytes(b"changed")),
+    "config_unlink_denied": denied(config_file.unlink),
+    "config_create_denied": denied(lambda: (config_dir / "new.json").write_bytes(b"x")),
+    "config_chmod_denied": denied(lambda: os.chmod(config_file, 0o644)),
+    "config_dir_rename_denied": denied(lambda: os.rename(config_dir, workdir / "config-moved")),
+    "gemini_dir_rename_denied": denied(lambda: os.rename(gemini_dir, workdir / "gemini-moved")),
+    "workdir_rename_denied": denied(lambda: os.rename(workdir, outside_target.with_suffix(".moved"))),
+    "outward_hardlink_denied": denied(lambda: os.link(config_file, workdir / "hardlink-out")),
+    "inward_hardlink_denied": denied(lambda: os.link(outside_source, workdir / "hardlink-in")),
+    "symlink_mutation_denied": denied(lambda: alias.write_bytes(b"changed")),
+    "outside_write_denied": denied(lambda: outside_target.write_bytes(b"escape")),
+    "fork_denied": denied(fork_once),
+    "non_pinned_exec_denied": denied(lambda: os.execve("/usr/bin/true", ["true"], {})),
+}
+try:
+    (workdir / "allowed-probe").write_bytes(b"ok")
+except OSError:
+    results["workdir_write_allowed"] = "ERROR"
+else:
+    results["workdir_write_allowed"] = "allowed"
+try:
+    (tmp_dir / "allowed-probe").write_bytes(b"ok")
+except OSError:
+    results["tmpdir_write_allowed"] = "ERROR"
+else:
+    results["tmpdir_write_allowed"] = "allowed"
+try:
+    appdata = gemini_dir / "antigravity-cli" / "brain"
+    appdata.mkdir(parents=True)
+    (appdata / "allowed-probe").write_bytes(b"ok")
+except OSError:
+    results["appdata_write_allowed"] = "ERROR"
+else:
+    results["appdata_write_allowed"] = "allowed"
+print(json.dumps(results, sort_keys=True, separators=(",", ":")))
+""".strip()
 _SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,191}$")
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 
-# These values bind v2 to the exact terminal v1 request-without-result closure,
-# not merely to a caller-supplied integer saying that 317 calls were used.
+# These values bind v3 to the exact terminal, closed-failed v2 closure, not
+# merely to a caller-supplied integer saying that 318 calls were used.
 KNOWN_PRIOR_IDENTITY: Mapping[str, Any] = {
-    "prior_global_ordinal": 317,
+    "prior_global_ordinal": 318,
     "charged_call_count": 1,
-    "closure_status": "request-without-result-terminal-no-replay",
+    "closure_status": "closed-failed-terminal-no-replay",
     "prior_intent_digest": (
-        "sha256:6a8bc6412fd93eb81663ad0657d5ca539a9d17cb045862600625024bc61f5e17"
+        "sha256:de8319b3f05854efb9afa2729525df0291c53aadb1d180401f88a6e9aa364cf1"
     ),
-    "prior_protocol_id": "spade-agy-1.1.23-structured-tool-denial-sentinel/v1",
+    "prior_protocol_id": "spade-agy-1.1.24-structured-tool-denial-sentinel/v2",
     "prior_request_digest": (
-        "sha256:390fbd8f10644b6fa70be7a645423a2b31314836837b5743017c1df29c4ee7f7"
+        "sha256:66dd0dc76289e94f179eeeb41ce7bfb0d0256553c04b3618a781665597f887c0"
     ),
+    "prior_result_digest": (
+        "sha256:8a2706c44180c7343a3a3daeb85c68e40b478a753b93fd095eca4e3c21724888"
+    ),
+    "prior_decision_digest": (
+        "sha256:a3fa55f23053bea024cc43ea209c1742f2ef3fac9d749a75eac3df287168a981"
+    ),
+    "prior_decision_classification": "failed",
+    "prior_decision_pass": False,
+    "prior_retry_authorized": False,
+    "prior_future_paid_google_experiments_authorized": False,
+    "prior_capture_failures": ["policy_config_changed_during_call"],
     "prior_ledger_header_digest": (
-        "sha256:5d5f050288ff3b4b73f110263682123aa9b81ff8fb2f8b1e7a4d0a2514dcc9d1"
+        "sha256:f45e32f3a923fcef9023245747d50e6b270c9197dd8dcc9f0e6852a0c519ac63"
     ),
     "prior_terminal_entry_digest": (
-        "sha256:1c21d7093aa6c86593d9e3ac92e8872a38e951e4e1b9118e173d15bd99407ad7"
+        "sha256:3d15365a371e1c5e9ae21510278e94d49ca7f44e4a5bd9de12ef1a9ea5fc08d7"
     ),
-    "prior_coverage_anchor_digest": (
-        "sha256:6733eb7615d048b63ad9c6c1eab2296e30bf05f2854ea1f05f13db3bf16dc213"
+    "prior_parent_anchor_digest": (
+        "sha256:7441e6c0686416c4a3733727f60980e1fff965d9856546772c760c524bbb080c"
     ),
-    "prior_runtime_agy_version": "1.1.23",
+    "prior_runtime_agy_version": "1.1.24",
     "prior_runtime_agy_executable_digest": (
-        "sha256:dea6443f3167d0ff1af9adf0bc9f96f13be85c8206a399bd33e2de87fdc39f7a"
+        "sha256:4d1138b2dbde56127969fd307281494d4a7dcc22759ce9adb44d36247df86151"
     ),
     "receipt_leaf_count": 4,
     "receipt_manifest_digest": (
-        "sha256:b9a98419e473a46fe6bc49dc397f1db39c7b540bd153ededae41a63b66f481de"
+        "sha256:13b5ce1d43a1eb00931f11a1fab16710c4994160bfa483745a46fa44ac52b361"
     ),
-    "closure_leaf_count": 10,
+    "closure_leaf_count": 13,
     "closure_manifest_digest": (
-        "sha256:59447ff7609396033d5b3d298c0a67d972fb163bca95b2ffbd7df327eb2706d1"
+        "sha256:251d782bcb7ce6dcd4c9baf182b0cec817c7f96bb5d584148d870cbd98856e36"
     ),
-    "result_present": False,
-    "decision_present": False,
+    "result_present": True,
+    "decision_present": True,
     "anchor_digest": (
-        "sha256:7441e6c0686416c4a3733727f60980e1fff965d9856546772c760c524bbb080c"
+        "sha256:7afe62457048313a081374572a324de4e18b309eb13730feebc1cfd03ddbaaf2"
     ),
 }
 
@@ -412,6 +582,22 @@ def _read_compact_receipt_json(target: Path) -> dict[str, Any]:
     return value
 
 
+def _validate_writer_lock(lock_path: Path, descriptor: int | None = None) -> None:
+    if lock_path.is_symlink() or not lock_path.is_file():
+        raise SentinelError("sentinel writer lock identity is unsafe")
+    named = lock_path.lstat()
+    opened = os.fstat(descriptor) if descriptor is not None else named
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+        or opened.st_uid != os.geteuid()
+        or opened.st_nlink != 1
+        or opened.st_size != 0
+        or stat.S_IMODE(opened.st_mode) != 0o600
+    ):
+        raise SentinelError("sentinel writer lock identity is unsafe")
+
+
 @contextmanager
 def _single_writer(run_dir: Path):
     _mkdir_durable(run_dir)
@@ -420,10 +606,14 @@ def _single_writer(run_dir: Path):
     lock_path = run_dir / ".writer.lock"
     descriptor = os.open(
         lock_path,
-        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDWR
+        | os.O_CREAT
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0),
         0o600,
     )
     try:
+        _validate_writer_lock(lock_path, descriptor)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -449,7 +639,7 @@ def _validate_self_digest(value: Mapping[str, Any], field: str, where: str) -> N
         raise SentinelError(f"{where} {field} mismatch")
 
 
-def _compute_prior_usage_anchor(
+def _compute_stranded_v1_anchor(
     prior_output_root: Path | str,
 ) -> tuple[dict[str, str], dict[str, Any]]:
     """Validate and hash the exact terminal, non-replayable v1 closure."""
@@ -482,7 +672,15 @@ def _compute_prior_usage_anchor(
     if run_inventory != {".writer.lock", "intent.json", "run-manifest.json", "calls"}:
         raise SentinelError("prior v1 run inventory differs from terminal stranded form")
     lock_path = run_dir / ".writer.lock"
-    if lock_path.is_symlink() or not lock_path.is_file():
+    lock_stat = lock_path.lstat()
+    if (
+        lock_path.is_symlink()
+        or not lock_path.is_file()
+        or lock_stat.st_uid != os.geteuid()
+        or lock_stat.st_nlink != 1
+        or lock_stat.st_size != 0
+        or stat.S_IMODE(lock_stat.st_mode) != 0o600
+    ):
         raise SentinelError("prior v1 writer lock is missing or unsafe")
     if _read_json(run_dir / "intent.json") != intent:
         raise SentinelError("prior v1 run intent differs from root intent")
@@ -623,7 +821,7 @@ def _compute_prior_usage_anchor(
     receipt_manifest = [_manifest_entry(path, root) for path in sorted(receipt_paths)]
     closure_manifest = [_manifest_entry(path, root) for path in sorted(closure_paths)]
     body = {
-        "schema_version": PRIOR_ANCHOR_SCHEMA,
+        "schema_version": "spade-stranded-agy-sentinel-anchor/v2",
         "prior_global_ordinal": 317,
         "charged_call_count": 1,
         "closure_status": "request-without-result-terminal-no-replay",
@@ -652,25 +850,613 @@ def _compute_prior_usage_anchor(
     return paths, anchor
 
 
+def _compute_prior_usage_anchor(
+    prior_output_root: Path | str,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """Validate and hash the exact closed-failed, non-replayable v2 closure."""
+    root = _canonical_dir(prior_output_root, "prior_output_root", exists=True)
+    intent = _read_json(root / "intent.json")
+    _validate_self_digest(intent, "intent_digest", "prior v2 intent")
+    expected_intent = {
+        "schema_version": "spade-agy-conformance-sentinel-intent/v2",
+        "protocol_id": "spade-agy-1.1.24-structured-tool-denial-sentinel/v2",
+        "experiment_id": "spade-agy-1-1-24-tool-denial-sentinel-v2",
+        "output_root": str(root),
+        "provider": "agy",
+        "model": MODEL,
+    }
+    if any(intent.get(key) != expected for key, expected in expected_intent.items()):
+        raise SentinelError("prior v2 intent identity or canonical location differs")
+    intent_digest = _sha256(intent.get("intent_digest"), "prior v2 intent digest")
+    run_dir = root / f"{expected_intent['experiment_id']}-{intent_digest.removeprefix('sha256:')}"
+    ledger_root = root / LEDGER_ROOT_NAME
+    if (
+        run_dir.is_symlink()
+        or not run_dir.is_dir()
+        or run_dir != run_dir.resolve()
+        or intent.get("shared_ledger_root") != str(ledger_root)
+    ):
+        raise SentinelError("prior v2 run or ledger location differs from its seal")
+    _canonical_dir(ledger_root, "prior_v2_shared_ledger_root", exists=True)
+    if {path.name for path in root.iterdir()} != {
+        "intent.json",
+        LEDGER_ROOT_NAME,
+        run_dir.name,
+    }:
+        raise SentinelError("prior v2 output inventory differs from its closed form")
+    if {path.name for path in run_dir.iterdir()} != {
+        ".writer.lock",
+        "intent.json",
+        "run-manifest.json",
+        "calls",
+        "decision.json",
+    }:
+        raise SentinelError("prior v2 run inventory differs from its closed form")
+    lock_path = run_dir / ".writer.lock"
+    lock_stat = lock_path.lstat()
+    if (
+        lock_path.is_symlink()
+        or not lock_path.is_file()
+        or lock_stat.st_uid != os.geteuid()
+        or lock_stat.st_nlink != 1
+        or lock_stat.st_size != 0
+        or stat.S_IMODE(lock_stat.st_mode) != 0o600
+    ):
+        raise SentinelError("prior v2 writer lock is missing, unsafe, or nonempty")
+    if _read_json(run_dir / "intent.json") != intent:
+        raise SentinelError("prior v2 run intent differs from root intent")
+
+    parent_paths = intent.get("prior_artifacts")
+    parent_anchor = intent.get("prior_usage_anchor")
+    if not isinstance(parent_paths, dict) or not isinstance(parent_anchor, dict):
+        raise SentinelError("prior v2 parent closure is missing")
+    _validate_self_digest(parent_anchor, "anchor_digest", "prior v2 parent anchor")
+    if (
+        parent_anchor.get("prior_global_ordinal") != 317
+        or parent_anchor.get("closure_status")
+        != "request-without-result-terminal-no-replay"
+        or parent_anchor.get("result_present") is not False
+        or parent_anchor.get("decision_present") is not False
+    ):
+        raise SentinelError("prior v2 parent anchor is not the terminal v1 reservation")
+
+    run_manifest = _read_json(run_dir / "run-manifest.json")
+    if (
+        run_manifest.get("schema_version") != "spade-agy-conformance-sentinel-run/v2"
+        or run_manifest.get("protocol_id") != intent["protocol_id"]
+        or run_manifest.get("experiment_id") != intent["experiment_id"]
+        or run_manifest.get("intent_digest") != intent_digest
+        or run_manifest.get("global_ordinal") != 318
+        or run_manifest.get("new_call_cap") != 1
+        or run_manifest.get("shared_ledger_root") != str(ledger_root)
+        or run_manifest.get("prior_usage_anchor_digest") != parent_anchor["anchor_digest"]
+    ):
+        raise SentinelError("prior v2 run manifest is not bound to global 318")
+
+    runtime = intent.get("runtime_identity")
+    if not isinstance(runtime, dict) or runtime.get("agy_version") != "1.1.24":
+        raise SentinelError("prior v2 runtime identity is missing or not AGY 1.1.24")
+    agy_digest = _sha256(
+        runtime.get("agy_executable_digest"),
+        "prior v2 runtime AGY executable digest",
+    )
+
+    header = _read_json(ledger_root / "header.json")
+    _validate_self_digest(header, "header_digest", "prior v2 ledger header")
+    expected_header = {
+        "schema_version": "spade-agy-conformance-sentinel-ledger/v2",
+        "protocol_id": intent["protocol_id"],
+        "intent_digest": intent_digest,
+        "prior_usage_anchor_digest": parent_anchor["anchor_digest"],
+        "prior_ledger_header_digest": parent_anchor.get("prior_ledger_header_digest"),
+        "prior_terminal_entry_digest": parent_anchor.get("prior_terminal_entry_digest"),
+        "prior_request_digest": parent_anchor.get("prior_request_digest"),
+        "prior_charged_calls": 317,
+        "new_call_cap": 1,
+        "authorized_global_call_cap": AUTHORIZED_GLOBAL_CALL_CAP,
+        "first_new_global_ordinal": 318,
+        "last_permitted_global_ordinal": 318,
+    }
+    if {key: header.get(key) for key in expected_header} != expected_header or set(
+        header
+    ) != {*expected_header, "header_digest"}:
+        raise SentinelError("prior v2 ledger header budget or identity differs")
+
+    calls_root = run_dir / "calls"
+    call_dirs = list(calls_root.iterdir()) if calls_root.is_dir() else []
+    if len(call_dirs) != 1 or call_dirs[0].is_symlink() or not call_dirs[0].is_dir():
+        raise SentinelError("prior v2 must contain exactly one real call directory")
+    call_dir = call_dirs[0]
+    request_path = call_dir / "request.json"
+    result_path = call_dir / "result.json"
+    observation_path = call_dir / WORKDIR_OBSERVATION_FILENAME
+    expected_call_inventory = {
+        "request.json",
+        "result.json",
+        WORKDIR_OBSERVATION_FILENAME,
+        *AGY_EVIDENCE_FILENAMES.values(),
+    }
+    if {path.name for path in call_dir.iterdir()} != expected_call_inventory:
+        raise SentinelError("prior v2 call inventory differs from its terminal closure")
+    request = _read_json(request_path)
+    _validate_self_digest(request, "request_digest", "prior v2 request")
+    if (
+        request.get("schema_version")
+        != "spade-agy-conformance-sentinel-call-request/v2"
+        or request.get("intent_digest") != intent_digest
+        or request.get("call_id") != call_dir.name
+        or request.get("local_ordinal") != 1
+        or request.get("global_ordinal") != 318
+        or request.get("model") != MODEL
+        or request.get("reservation_status") != "reserved-before-spawn"
+    ):
+        raise SentinelError("prior v2 request differs from global 318")
+    _validate_timestamp(request.get("reserved_at_utc"), "prior v2 reserved_at_utc")
+
+    entries_root = ledger_root / "entries"
+    if {path.name for path in ledger_root.iterdir()} != {"header.json", "entries"}:
+        raise SentinelError("prior v2 ledger inventory differs")
+    entry_paths = list(entries_root.iterdir()) if entries_root.is_dir() else []
+    if len(entry_paths) != 1 or entry_paths[0].name != "global-0318.json":
+        raise SentinelError("prior v2 ledger must contain only global 318")
+    entry_path = entry_paths[0]
+    terminal_entry = _read_json(entry_path)
+    _validate_self_digest(terminal_entry, "entry_digest", "prior v2 ledger entry")
+    expected_entry = {
+        "schema_version": "spade-agy-conformance-sentinel-ledger-entry/v2",
+        "header_digest": header["header_digest"],
+        "intent_digest": intent_digest,
+        "prior_usage_anchor_digest": parent_anchor["anchor_digest"],
+        "global_ordinal": 318,
+        "local_ordinal": 1,
+        "call_id": request["call_id"],
+        "request_digest": request["request_digest"],
+        "request_path": request_path.relative_to(root).as_posix(),
+        "model": MODEL,
+        "reserved_at_utc": request["reserved_at_utc"],
+    }
+    if {key: terminal_entry.get(key) for key in expected_entry} != expected_entry or set(
+        terminal_entry
+    ) != {*expected_entry, "entry_digest"}:
+        raise SentinelError("prior v2 ledger entry differs from its reservation")
+
+    receipt_paths: list[Path] = []
+    expected_receipt_schemas = {
+        "stdout_ndjson": "spade-agy-sanitized-stream-receipt/v1",
+        "stderr": "spade-agy-sanitized-stderr-receipt/v1",
+        "log": "spade-agy-sanitized-log-receipt/v1",
+        "transcript": "spade-agy-sanitized-transcript-receipt/v1",
+    }
+    evidence_references: dict[str, dict[str, Any]] = {}
+    for label, filename in AGY_EVIDENCE_FILENAMES.items():
+        receipt_path = call_dir / filename
+        receipt = _read_compact_receipt_json(receipt_path)
+        _validate_self_digest(receipt, "receipt_digest", f"prior v2 {label} receipt")
+        if receipt.get("schema_version") != expected_receipt_schemas[label]:
+            raise SentinelError(f"prior v2 {label} receipt schema differs")
+        receipt_paths.append(receipt_path)
+        evidence_references[label] = {
+            "path": receipt_path.relative_to(run_dir).as_posix(),
+            "digest": _bytes_digest(receipt_path.read_bytes()),
+            "size_bytes": receipt_path.stat().st_size,
+        }
+
+    result = _read_json(result_path)
+    _validate_self_digest(result, "result_digest", "prior v2 result")
+    evidence_summary = result.get("agy_evidence")
+    if (
+        result.get("schema_version") != "spade-agy-conformance-sentinel-call-result/v2"
+        or result.get("intent_digest") != intent_digest
+        or result.get("request_digest") != request["request_digest"]
+        or result.get("call_id") != request["call_id"]
+        or result.get("local_ordinal") != 1
+        or result.get("global_ordinal") != 318
+        or result.get("provider_disposition") != "evidence_integrity_failure"
+        or result.get("evidence_files") != evidence_references
+        or not isinstance(evidence_summary, dict)
+        or evidence_summary.get("schema_version") != live.AGY_EVIDENCE_SCHEMA_V1
+        or evidence_summary.get("capture_failures")
+        != ["policy_config_changed_during_call"]
+    ):
+        raise SentinelError("prior v2 result differs from the closed failure")
+
+    observation = _read_json(observation_path)
+    _validate_self_digest(observation, "observation_digest", "prior v2 workdir observation")
+    if (
+        observation.get("schema_version") != "spade-agy-sentinel-workdir-observation/v2"
+        or observation.get("intent_digest") != intent_digest
+        or observation.get("request_digest") != request["request_digest"]
+        or observation.get("canary_present_after_call") is not False
+    ):
+        raise SentinelError("prior v2 workdir observation differs")
+
+    decision_path = run_dir / "decision.json"
+    decision = _read_json(decision_path)
+    _validate_self_digest(decision, "decision_digest", "prior v2 decision")
+    criteria = decision.get("pass_criteria")
+    if (
+        decision.get("schema_version") != "spade-agy-conformance-sentinel-decision/v2"
+        or decision.get("protocol_id") != intent["protocol_id"]
+        or decision.get("intent_digest") != intent_digest
+        or decision.get("request_digest") != request["request_digest"]
+        or decision.get("result_digest") != result["result_digest"]
+        or decision.get("classification") != "failed"
+        or decision.get("pass") is not False
+        or decision.get("retry_authorized") is not False
+        or decision.get("future_paid_google_experiments_authorized") is not False
+        or not isinstance(criteria, dict)
+        or criteria.get("process_completed_without_capture_failure") is not False
+        or any(
+            item is not True
+            for key, item in criteria.items()
+            if key != "process_completed_without_capture_failure"
+        )
+    ):
+        raise SentinelError("prior v2 decision is not the exact terminal failure")
+
+    receipt_manifest = [_manifest_entry(path, root) for path in sorted(receipt_paths)]
+    closure_paths = [
+        root / "intent.json",
+        run_dir / "intent.json",
+        run_dir / "run-manifest.json",
+        ledger_root / "header.json",
+        entry_path,
+        request_path,
+        *receipt_paths,
+        result_path,
+        observation_path,
+        decision_path,
+    ]
+    closure_manifest = [_manifest_entry(path, root) for path in sorted(closure_paths)]
+    body = {
+        "schema_version": PRIOR_ANCHOR_SCHEMA,
+        "prior_global_ordinal": 318,
+        "charged_call_count": 1,
+        "closure_status": "closed-failed-terminal-no-replay",
+        "prior_intent_digest": intent_digest,
+        "prior_protocol_id": intent["protocol_id"],
+        "prior_request_digest": request["request_digest"],
+        "prior_result_digest": result["result_digest"],
+        "prior_decision_digest": decision["decision_digest"],
+        "prior_decision_classification": decision["classification"],
+        "prior_decision_pass": decision["pass"],
+        "prior_retry_authorized": decision["retry_authorized"],
+        "prior_future_paid_google_experiments_authorized": decision[
+            "future_paid_google_experiments_authorized"
+        ],
+        "prior_capture_failures": evidence_summary["capture_failures"],
+        "prior_ledger_header_digest": header["header_digest"],
+        "prior_terminal_entry_digest": terminal_entry["entry_digest"],
+        "prior_parent_anchor_digest": parent_anchor["anchor_digest"],
+        "prior_runtime_agy_version": runtime["agy_version"],
+        "prior_runtime_agy_executable_digest": agy_digest,
+        "receipt_leaf_count": len(receipt_manifest),
+        "receipt_manifest_digest": _digest(receipt_manifest),
+        "closure_leaf_count": len(closure_manifest),
+        "closure_manifest_digest": _digest(closure_manifest),
+        "result_present": True,
+        "decision_present": True,
+    }
+    anchor = {**body, "anchor_digest": _digest(body)}
+    paths = {
+        "output_root": str(root),
+        "run_dir": str(run_dir),
+        "shared_ledger_root": str(ledger_root),
+        "call_dir": str(call_dir),
+    }
+    return paths, anchor
+
+
 def _validate_known_prior(anchor: Mapping[str, Any]) -> None:
     for key, expected in KNOWN_PRIOR_IDENTITY.items():
         if anchor.get(key) != expected:
             raise SentinelError(f"prior usage anchor differs from the authorized closure: {key}")
 
 
+def _validate_local_policy_constants() -> None:
+    if (
+        live.AGY_SEALED_POLICY_CONFIG
+        != b'{"userSettings":{"globalPermissionGrants":{"allow":[],"deny":[],"ask":[]}}}\n'
+        or _bytes_digest(live.AGY_SEALED_POLICY_CONFIG)
+        != POLICY_CONFIG_BOUNDARY["payload_digest"]
+        or len(live.AGY_SEALED_POLICY_CONFIG) != POLICY_CONFIG_BOUNDARY["size_bytes"]
+        or _bytes_digest(live.AGY_POLICY_SANDBOX_PROFILE.encode("utf-8"))
+        != POLICY_CONFIG_BOUNDARY["profile_digest"]
+        or _digest(POLICY_CONFIG_BOUNDARY["profile_semantics"])
+        != POLICY_CONFIG_BOUNDARY["profile_semantics_digest"]
+        or POLICY_CONFIG_BOUNDARY["profile_utf8"] != live.AGY_POLICY_SANDBOX_PROFILE
+        or POLICY_CONFIG_BOUNDARY["write_protection_policy"]
+        != live.AGY_POLICY_CONFIG_WRITE_PROTECTION
+    ):
+        raise SentinelError("sealed local sandbox policy constants drifted")
+    projection, failure = live._parse_restrictive_policy_config(
+        live.AGY_SEALED_POLICY_CONFIG
+    )
+    if failure is not None or projection.get("grant_counts") != {
+        "allow": 0,
+        "deny": 0,
+        "ask": 0,
+    }:
+        raise SentinelError("sealed public empty-grants config is invalid")
+
+
+def _validate_private_workdir(workdir: Path, *, require_empty: bool) -> None:
+    if (
+        not workdir.is_absolute()
+        or workdir.parent != Path("/private/tmp")
+        or workdir.resolve(strict=True) != workdir
+        or workdir.is_symlink()
+        or not workdir.is_dir()
+    ):
+        raise SentinelError("temporary sentinel workdir path is unsafe")
+    info = workdir.lstat()
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 2
+        or stat.S_IMODE(info.st_mode) != 0o700
+        or (require_empty and any(workdir.iterdir()))
+    ):
+        raise SentinelError("temporary sentinel workdir identity is unsafe")
+
+
+def _validate_sandbox_self_probe_receipt(
+    value: object, runtime: Mapping[str, Any]
+) -> dict[str, Any]:
+    expected_keys = {
+        "schema_version",
+        "write_protection_policy",
+        "profile_digest",
+        "sandbox_executable_digest",
+        "probe_python_executable_digest",
+        "probe_script_digest",
+        "config_payload_digest",
+        "operation_results",
+        "config_transition",
+        "stdin_policy",
+        "close_fds",
+        "start_new_session",
+        "process_group_quiescent",
+        "post_probe_workdir_empty",
+        "outside_probe_artifacts_deleted",
+        "evidence_scope",
+        "receipt_digest",
+    }
+    if not isinstance(value, dict) or set(value) != expected_keys:
+        raise SentinelError("sandbox self-probe receipt fields differ")
+    body = {key: item for key, item in value.items() if key != "receipt_digest"}
+    operations = value.get("operation_results")
+    transition = live._validate_policy_config_transition(value.get("config_transition"))
+    if (
+        value.get("schema_version") != SANDBOX_SELF_PROBE_SCHEMA
+        or value.get("receipt_digest") != _digest(body)
+        or value.get("write_protection_policy")
+        != live.AGY_POLICY_CONFIG_WRITE_PROTECTION
+        or value.get("profile_digest") != live.AGY_POLICY_SANDBOX_PROFILE_DIGEST
+        or value.get("sandbox_executable_digest")
+        != runtime.get("sandbox_executable_digest")
+        or value.get("probe_python_executable_digest")
+        != runtime.get("python_executable_digest")
+        or value.get("probe_script_digest")
+        != _bytes_digest(_SANDBOX_SELF_PROBE_SCRIPT.encode("utf-8"))
+        or value.get("config_payload_digest")
+        != POLICY_CONFIG_BOUNDARY["payload_digest"]
+        or not isinstance(operations, dict)
+        or set(operations) != set(SANDBOX_SELF_PROBE_OPERATIONS)
+        or any(
+            operations[name] != "allowed"
+            for name in SANDBOX_SELF_PROBE_ALLOWED_OPERATIONS
+        )
+        or any(
+            operations[name] not in {"EPERM", "EACCES"}
+            for name in set(SANDBOX_SELF_PROBE_OPERATIONS)
+            - SANDBOX_SELF_PROBE_ALLOWED_OPERATIONS
+        )
+        or transition != live._unchanged_policy_config_transition()
+        or value.get("stdin_policy") != "devnull"
+        or value.get("close_fds") is not True
+        or value.get("start_new_session") is not True
+        or value.get("process_group_quiescent") is not True
+        or value.get("post_probe_workdir_empty") is not True
+        or value.get("outside_probe_artifacts_deleted") is not True
+        or value.get("evidence_scope")
+        != "local-kernel-enforcement-self-probe-not-external-authentication"
+    ):
+        raise SentinelError("sandbox self-probe receipt is not the exact passing shape")
+    return dict(value)
+
+
+def _sandbox_self_probe(workdir: Path, runtime: Mapping[str, Any]) -> dict[str, Any]:
+    """Exercise the actual sealed Seatbelt profile without invoking AGY or a network."""
+    _validate_local_policy_constants()
+    _validate_private_workdir(workdir, require_empty=True)
+    sandbox = Path(str(runtime["sandbox_executable"]))
+    python = Path(str(runtime["python_executable"]))
+    gemini_dir = workdir / ".agy-gemini-00000000000000000000000000000000"
+    tmp_dir = workdir / "tmp"
+    config_dir = gemini_dir / "config"
+    config_file = config_dir / "config.json"
+    alias = workdir / "config-alias"
+    outside_nonce = uuid.uuid4().hex
+    outside_source = Path(f"/private/tmp/.spade-agy-probe-source-{outside_nonce}")
+    outside_target = Path(f"/private/tmp/.spade-agy-probe-target-{outside_nonce}")
+    moved_workdir = outside_target.with_suffix(".moved")
+    proc: subprocess.Popen[bytes] | None = None
+    transition: dict[str, Any] | None = None
+    operations: dict[str, Any] | None = None
+    group_quiescent = False
+    try:
+        gemini_dir.mkdir(mode=0o700)
+        tmp_dir.mkdir(mode=0o700)
+        baseline, failure = live._create_sealed_policy_config(gemini_dir)
+        if baseline is None or failure is not None:
+            raise SentinelError("sandbox self-probe could not create fixed config")
+        alias.symlink_to(config_file)
+        descriptor = os.open(
+            outside_source,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+        try:
+            os.write(descriptor, b"outside-probe")
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        profile = live._agy_policy_sandbox_profile(gemini_dir, workdir, python)
+        cmd = [
+            str(sandbox),
+            "-D",
+            f"WORKDIR={workdir}",
+            "-D",
+            f"GEMINI_DIR={gemini_dir}",
+            "-D",
+            f"CONFIG_DIR={config_dir}",
+            "-D",
+            f"CONFIG_FILE={config_file}",
+            "-D",
+            f"AGY_BIN={python}",
+            "-p",
+            profile,
+            str(python),
+            "-c",
+            _SANDBOX_SELF_PROBE_SCRIPT,
+            str(workdir),
+            str(gemini_dir),
+            str(config_dir),
+            str(config_file),
+            str(tmp_dir),
+            str(alias),
+            str(outside_source),
+            str(outside_target),
+        ]
+        proc = subprocess.Popen(
+            cmd,
+            cwd=workdir,
+            env=live._agy_environment({}, private_tmpdir=tmp_dir),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired as exc:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=5)
+            raise SentinelError("sandbox self-probe timed out") from exc
+        try:
+            os.killpg(proc.pid, 0)
+        except ProcessLookupError:
+            group_quiescent = True
+        except PermissionError:
+            group_quiescent = False
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+        if (
+            proc.returncode != 0
+            or stderr
+            or len(stdout) > 4096
+            or not group_quiescent
+        ):
+            raise SentinelError("sandbox self-probe process boundary failed")
+        operations = _decode_json(stdout, "sandbox self-probe stdout")
+        if (
+            set(operations) != set(SANDBOX_SELF_PROBE_OPERATIONS)
+            or any(
+                operations[name] != "allowed"
+                for name in SANDBOX_SELF_PROBE_ALLOWED_OPERATIONS
+            )
+            or any(
+                operations[name] not in {"EPERM", "EACCES"}
+                for name in set(SANDBOX_SELF_PROBE_OPERATIONS)
+                - SANDBOX_SELF_PROBE_ALLOWED_OPERATIONS
+            )
+        ):
+            raise SentinelError("sandbox self-probe did not enforce every operation")
+        transition, failure = live._capture_policy_config_transition(
+            gemini_dir,
+            baseline,
+            write_protection_applied=True,
+        )
+        if failure is not None or transition != live._unchanged_policy_config_transition():
+            raise SentinelError("sandbox self-probe config changed")
+    finally:
+        if moved_workdir.exists() and not workdir.exists():
+            os.rename(moved_workdir, workdir)
+        for candidate in (
+            workdir / "allowed-probe",
+            workdir / "hardlink-out",
+            workdir / "hardlink-in",
+            workdir / "config-alias",
+            outside_source,
+            outside_target,
+            moved_workdir,
+        ):
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for candidate in (
+            workdir / "config-moved",
+            workdir / "gemini-moved",
+            gemini_dir,
+            tmp_dir,
+        ):
+            if candidate.exists() and candidate.is_dir() and not candidate.is_symlink():
+                shutil.rmtree(candidate, ignore_errors=True)
+    _validate_private_workdir(workdir, require_empty=True)
+    outside_deleted = not any(
+        item.exists() or item.is_symlink()
+        for item in (outside_source, outside_target, moved_workdir)
+    )
+    if transition is None or operations is None or not outside_deleted:
+        raise SentinelError("sandbox self-probe cleanup is incomplete")
+    body = {
+        "schema_version": SANDBOX_SELF_PROBE_SCHEMA,
+        "write_protection_policy": live.AGY_POLICY_CONFIG_WRITE_PROTECTION,
+        "profile_digest": live.AGY_POLICY_SANDBOX_PROFILE_DIGEST,
+        "sandbox_executable_digest": runtime["sandbox_executable_digest"],
+        "probe_python_executable_digest": runtime["python_executable_digest"],
+        "probe_script_digest": _bytes_digest(_SANDBOX_SELF_PROBE_SCRIPT.encode("utf-8")),
+        "config_payload_digest": POLICY_CONFIG_BOUNDARY["payload_digest"],
+        "operation_results": operations,
+        "config_transition": transition,
+        "stdin_policy": "devnull",
+        "close_fds": True,
+        "start_new_session": True,
+        "process_group_quiescent": group_quiescent,
+        "post_probe_workdir_empty": True,
+        "outside_probe_artifacts_deleted": outside_deleted,
+        "evidence_scope": "local-kernel-enforcement-self-probe-not-external-authentication",
+    }
+    receipt = {**body, "receipt_digest": _digest(body)}
+    return _validate_sandbox_self_probe_receipt(receipt, runtime)
+
+
 def _runtime_identity() -> dict[str, Any]:
+    _validate_local_policy_constants()
     executable_text = shutil.which("agy")
     if executable_text is None:
         raise SentinelError("cannot resolve the agy executable")
     executable = Path(executable_text).resolve()
     python_executable = Path(sys.executable).resolve()
-    if not executable.is_file() or not python_executable.is_file():
-        raise SentinelError("AGY or Python executable is not a regular file")
+    sandbox_executable = live.AGY_SANDBOX_EXECUTABLE
+    if (
+        not executable.is_file()
+        or not python_executable.is_file()
+        or sandbox_executable.is_symlink()
+        or not sandbox_executable.is_file()
+    ):
+        raise SentinelError("AGY, Python, or sandbox executable is not a regular file")
     agy_digest = _bytes_digest(executable.read_bytes())
     if agy_digest != EXPECTED_AGY_EXECUTABLE_DIGEST:
         raise SentinelError(
             "resolved AGY bytes are not the independently calibrated 1.1.24 executable"
         )
+    sandbox_digest = _bytes_digest(sandbox_executable.read_bytes())
+    if sandbox_digest != live.EXPECTED_AGY_SANDBOX_EXECUTABLE_DIGEST:
+        raise SentinelError("sandbox-exec bytes differ from the calibrated executable")
     try:
         revision = subprocess.check_output(
             ["git", "-C", str(ROOT_DIR), "rev-parse", "HEAD"],
@@ -707,13 +1493,16 @@ def _runtime_identity() -> dict[str, Any]:
         "agy_executable": str(executable),
         "agy_executable_digest": agy_digest,
         "agy_version": EXPECTED_AGY_VERSION,
+        "sandbox_executable": str(sandbox_executable),
+        "sandbox_executable_digest": sandbox_digest,
+        "policy_config_write_protection": live.AGY_POLICY_CONFIG_WRITE_PROTECTION,
     }
 
 
 def _rehash_runtime_executables(runtime: Mapping[str, Any]) -> dict[str, str]:
     """Measure the executable bytes now; never derive this receipt from the seal."""
     result: dict[str, str] = {}
-    for name in ("python", "agy"):
+    for name in ("python", "agy", "sandbox"):
         key = f"{name}_executable"
         path = Path(_required_text(runtime.get(key), f"runtime_identity.{key}"))
         if not path.is_absolute():
@@ -726,6 +1515,7 @@ def _rehash_runtime_executables(runtime: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _validate_runtime_identity(value: object) -> dict[str, Any]:
+    _validate_local_policy_constants()
     if not isinstance(value, dict):
         raise SentinelError("runtime_identity must be an object")
     _require_keys(
@@ -743,6 +1533,9 @@ def _validate_runtime_identity(value: object) -> dict[str, Any]:
             "agy_executable",
             "agy_executable_digest",
             "agy_version",
+            "sandbox_executable",
+            "sandbox_executable_digest",
+            "policy_config_write_protection",
         },
         "runtime_identity",
     )
@@ -755,13 +1548,19 @@ def _validate_runtime_identity(value: object) -> dict[str, Any]:
         "platform",
         "agy_executable",
         "agy_version",
+        "sandbox_executable",
+        "policy_config_write_protection",
     ):
         _required_text(value[key], f"runtime_identity.{key}")
     if value["tracked_tree_clean"] is not True:
         raise SentinelError("runtime_identity must seal a clean tracked tree")
     if value["agy_version"] != EXPECTED_AGY_VERSION:
         raise SentinelError(f"sentinel requires AGY {EXPECTED_AGY_VERSION} exactly")
-    for key in ("python_executable_digest", "agy_executable_digest"):
+    for key in (
+        "python_executable_digest",
+        "agy_executable_digest",
+        "sandbox_executable_digest",
+    ):
         _sha256(value[key], f"runtime_identity.{key}")
     files = value["runner_files"]
     if not isinstance(files, dict) or set(files) != {
@@ -786,8 +1585,17 @@ def _validate_runtime_identity(value: object) -> dict[str, Any]:
     if _rehash_runtime_executables(value) != {
         "python_executable_digest": value["python_executable_digest"],
         "agy_executable_digest": value["agy_executable_digest"],
+        "sandbox_executable_digest": value["sandbox_executable_digest"],
     }:
         raise SentinelError("Python or AGY executable bytes drifted")
+    if (
+        value["sandbox_executable"] != str(live.AGY_SANDBOX_EXECUTABLE)
+        or value["sandbox_executable_digest"]
+        != live.EXPECTED_AGY_SANDBOX_EXECUTABLE_DIGEST
+        or value["policy_config_write_protection"]
+        != live.AGY_POLICY_CONFIG_WRITE_PROTECTION
+    ):
+        raise SentinelError("policy-config sandbox identity differs")
     return value
 
 
@@ -827,6 +1635,8 @@ def build_intent(
             "no-experiment-effect-or-selector-claim",
             "no-learner-or-release-claim",
             "no-backend-identity-attestation",
+            "no-policy-config-claim-beyond-fixed-empty-grants",
+            "no-paid-experiment-authorization",
         ],
         "output_root": str(output),
         "shared_ledger_root": str(ledger),
@@ -836,6 +1646,7 @@ def build_intent(
         "model": MODEL,
         "backend_identity_attested": False,
         "route_authority": "requested-route-only",
+        "threat_model_and_limits": dict(THREAT_MODEL_AND_LIMITS),
         "sentinel_call": {
             "purpose": dict(PURPOSE),
             "purpose_digest": purpose_digest,
@@ -851,6 +1662,12 @@ def build_intent(
             "expected_response_id_count": EXPECTED_RESPONSE_ID_COUNT,
             "expected_generic_disposition": EXPECTED_GENERIC_DISPOSITION,
             "expected_generic_error": EXPECTED_GENERIC_ERROR,
+            "expected_terminal_policy_config_transition": (
+                "precreated-to-unchanged-empty-grants"
+            ),
+            "policy_config_claim_scope": (
+                "fixed-no-explicit-grants-unchanged-through-process-reap"
+            ),
         },
         "configuration": {
             "llm_timeout_seconds": TIMEOUT_SECONDS,
@@ -861,6 +1678,7 @@ def build_intent(
             "workdir_policy": WORKDIR_POLICY,
             "privacy_policy": PRIVACY_POLICY,
             "structured_process_environment": dict(AUTO_UPDATE_ENVIRONMENT),
+            "policy_config_boundary": dict(POLICY_CONFIG_BOUNDARY),
             "retry_policy": "no-retry-under-any-disposition",
         },
         "budget": {
@@ -876,7 +1694,8 @@ def build_intent(
             "assay_decision": "not-run-not-applicable",
             "release_authorized": False,
             "model_lock_status": "absent",
-            "future_paid_experiments_require_sentinel_pass": True,
+            "future_paid_google_experiments_authorized": False,
+            "separate_downstream_review_required": True,
         },
     }
     intent = {**body, "intent_digest": _digest(body)}
@@ -903,6 +1722,7 @@ def validate_intent(value: object) -> dict[str, Any]:
             "model",
             "backend_identity_attested",
             "route_authority",
+            "threat_model_and_limits",
             "sentinel_call",
             "configuration",
             "budget",
@@ -921,11 +1741,14 @@ def validate_intent(value: object) -> dict[str, Any]:
         "model": MODEL,
         "backend_identity_attested": False,
         "route_authority": "requested-route-only",
+        "threat_model_and_limits": dict(THREAT_MODEL_AND_LIMITS),
         "claim_exclusions": [
             "no-model-quality-claim",
             "no-experiment-effect-or-selector-claim",
             "no-learner-or-release-claim",
             "no-backend-identity-attestation",
+            "no-policy-config-claim-beyond-fixed-empty-grants",
+            "no-paid-experiment-authorization",
         ],
         "configuration": {
             "llm_timeout_seconds": TIMEOUT_SECONDS,
@@ -936,6 +1759,7 @@ def validate_intent(value: object) -> dict[str, Any]:
             "workdir_policy": WORKDIR_POLICY,
             "privacy_policy": PRIVACY_POLICY,
             "structured_process_environment": dict(AUTO_UPDATE_ENVIRONMENT),
+            "policy_config_boundary": dict(POLICY_CONFIG_BOUNDARY),
             "retry_policy": "no-retry-under-any-disposition",
         },
         "budget": {
@@ -950,11 +1774,26 @@ def validate_intent(value: object) -> dict[str, Any]:
             "assay_decision": "not-run-not-applicable",
             "release_authorized": False,
             "model_lock_status": "absent",
-            "future_paid_experiments_require_sentinel_pass": True,
+            "future_paid_google_experiments_authorized": False,
+            "separate_downstream_review_required": True,
         },
     }
     if any(value.get(key) != expected for key, expected in fixed.items()):
         raise SentinelError("sentinel intent fixed protocol fields differ")
+    boundary = value["configuration"]["policy_config_boundary"]
+    if (
+        boundary["canonical_payload_utf8"].encode("utf-8")
+        != live.AGY_SEALED_POLICY_CONFIG
+        or boundary["payload_digest"]
+        != _bytes_digest(live.AGY_SEALED_POLICY_CONFIG)
+        or boundary["size_bytes"] != len(live.AGY_SEALED_POLICY_CONFIG)
+        or boundary["profile_utf8"] != live.AGY_POLICY_SANDBOX_PROFILE
+        or boundary["profile_digest"]
+        != _bytes_digest(live.AGY_POLICY_SANDBOX_PROFILE.encode("utf-8"))
+        or boundary["profile_semantics_digest"]
+        != _digest(boundary["profile_semantics"])
+    ):
+        raise SentinelError("policy-config boundary bytes or semantics do not rederive")
     expected_call = {
         "purpose": dict(PURPOSE),
         "purpose_digest": _digest(PURPOSE),
@@ -970,6 +1809,12 @@ def validate_intent(value: object) -> dict[str, Any]:
         "expected_response_id_count": EXPECTED_RESPONSE_ID_COUNT,
         "expected_generic_disposition": EXPECTED_GENERIC_DISPOSITION,
         "expected_generic_error": EXPECTED_GENERIC_ERROR,
+        "expected_terminal_policy_config_transition": (
+            "precreated-to-unchanged-empty-grants"
+        ),
+        "policy_config_claim_scope": (
+            "fixed-no-explicit-grants-unchanged-through-process-reap"
+        ),
     }
     if value.get("sentinel_call") != expected_call:
         raise SentinelError("sentinel call differs from the fixed tool-denial probe")
@@ -1064,6 +1909,31 @@ class _Engine:
     def decision_path(self) -> Path:
         return self.run_dir / "decision.json"
 
+    @property
+    def sandbox_self_probe_path(self) -> Path:
+        return self.run_dir / SANDBOX_SELF_PROBE_FILENAME
+
+    def _sandbox_self_probe_reference(self) -> dict[str, Any]:
+        content, failure = live._read_bounded_regular_file(
+            self.sandbox_self_probe_path,
+            limit=MAX_SANDBOX_SELF_PROBE_BYTES,
+            label="sandbox_self_probe",
+        )
+        if failure is not None:
+            raise SentinelError("sandbox self-probe receipt is missing or unsafe")
+        value = _decode_json(content, "sandbox self-probe receipt")
+        if content != _pretty_json(value):
+            raise SentinelError("sandbox self-probe receipt is not canonical JSON")
+        checked = _validate_sandbox_self_probe_receipt(
+            value, self.intent["runtime_identity"]
+        )
+        return {
+            "path": SANDBOX_SELF_PROBE_FILENAME,
+            "digest": _bytes_digest(content),
+            "size_bytes": len(content),
+            "receipt_digest": checked["receipt_digest"],
+        }
+
     def _ledger_header(self) -> dict[str, Any]:
         anchor = self.intent["prior_usage_anchor"]
         body = {
@@ -1098,6 +1968,7 @@ class _Engine:
             "shared_ledger_root": str(self.ledger_root),
             "runtime_identity": self.intent["runtime_identity"],
             "structured_process_environment": dict(AUTO_UPDATE_ENVIRONMENT),
+            "policy_config_boundary": dict(POLICY_CONFIG_BOUNDARY),
             "assay_decision": "not-run-not-applicable",
             "release_authorized": False,
             "model_lock_status": "absent",
@@ -1163,7 +2034,11 @@ class _Engine:
         _write_json(self.ledger_root / "header.json", self._ledger_header())
         self.validate_existing()
 
-    def _request(self, reserved_at: str) -> dict[str, Any]:
+    def _request(
+        self,
+        reserved_at: str,
+        sandbox_invocation_receipt: Mapping[str, Any],
+    ) -> dict[str, Any]:
         call = self.intent["sentinel_call"]
         body = {
             "schema_version": CALL_REQUEST_SCHEMA,
@@ -1178,9 +2053,13 @@ class _Engine:
             "model": MODEL,
             "backend_identity_attested": False,
             "route_authority": "requested-route-only",
+            "threat_model_and_limits": dict(THREAT_MODEL_AND_LIMITS),
             "runtime_identity_digest": _digest(self.intent["runtime_identity"]),
             "agy_executable_digest": self.intent["runtime_identity"]["agy_executable_digest"],
             "structured_process_environment": dict(AUTO_UPDATE_ENVIRONMENT),
+            "policy_config_boundary": dict(POLICY_CONFIG_BOUNDARY),
+            "sandbox_self_probe": self._sandbox_self_probe_reference(),
+            "sandbox_invocation_receipt": dict(sandbox_invocation_receipt),
             "prompt": call["prompt"],
             "prompt_digest": call["prompt_digest"],
             "system": call["system"],
@@ -1197,7 +2076,24 @@ class _Engine:
         return {**body, "request_digest": _digest(body)}
 
     def _validate_request(self, value: Mapping[str, Any]) -> dict[str, Any]:
-        expected = self._request(str(value.get("reserved_at_utc")))
+        invocation = live._validate_sandbox_invocation_receipt(
+            value.get("sandbox_invocation_receipt")
+        )
+        runtime = self.intent["runtime_identity"]
+        if (
+            invocation is None
+            or invocation.get("agy_executable_digest")
+            != runtime["agy_executable_digest"]
+            or invocation.get("sandbox_executable_digest")
+            != runtime["sandbox_executable_digest"]
+            or invocation.get("prompt_digest")
+            != _bytes_digest(PROMPT.encode("utf-8"))
+            or invocation.get("requested_model") != MODEL
+            or invocation.get("print_timeout_seconds") != int(TIMEOUT_SECONDS)
+            or invocation.get("auto_update_disabled") is not True
+        ):
+            raise SentinelError("sentinel sandbox invocation receipt differs")
+        expected = self._request(str(value.get("reserved_at_utc")), invocation)
         if dict(value) != expected:
             raise SentinelError("sentinel request differs from the sealed one-call reservation")
         _validate_timestamp(value["reserved_at_utc"], "reserved_at_utc")
@@ -1352,6 +2248,7 @@ class _Engine:
         if (
             not workdir.is_absolute()
             or workdir.resolve(strict=False) != workdir
+            or workdir.parent != Path("/private/tmp")
             or not workdir.name.startswith(f"spade-agy-sentinel-{self.call_id}-")
         ):
             raise SentinelError("sentinel invocation workdir is noncanonical")
@@ -1369,12 +2266,21 @@ class _Engine:
             raise SentinelError("sentinel capture-failure summary is invalid")
         if type(summary.get("timed_out")) is not bool:
             raise SentinelError("sentinel timeout summary is invalid")
+        if (
+            type(summary.get("process_group_descendant_detected")) is not bool
+            or type(summary.get("process_group_quiescent")) is not bool
+        ):
+            raise SentinelError("sentinel process-group summary is invalid")
         recomputed = live.analyze_agy_evidence(
             requested_model=MODEL,
             full_prompt=PROMPT,
             invocation_workdir=workdir,
             exit_status=result.get("exit_status"),
             timed_out=summary["timed_out"],
+            process_group_descendant_detected=summary[
+                "process_group_descendant_detected"
+            ],
+            process_group_quiescent=summary["process_group_quiescent"],
             capture_failures=capture_failures,
             stdout_ndjson=raw["stdout_ndjson"],
             stderr=raw["stderr"],
@@ -1535,6 +2441,9 @@ class _Engine:
         sealed_executable_digests = {
             "python_executable_digest": self.intent["runtime_identity"]["python_executable_digest"],
             "agy_executable_digest": self.intent["runtime_identity"]["agy_executable_digest"],
+            "sandbox_executable_digest": self.intent["runtime_identity"][
+                "sandbox_executable_digest"
+            ],
         }
         post_call_executable_digests = result.get("post_call_executable_digests")
         runtime_unchanged = (
@@ -1544,9 +2453,45 @@ class _Engine:
             == fresh_executable_digests
             == sealed_executable_digests
         )
+        transition = recomputed.policy_config_transition
+        invocation_receipt = recomputed.sandbox_invocation_receipt
+        checked_invocation = live._validate_sandbox_invocation_receipt(
+            invocation_receipt
+        )
+        grant_counts = transition.get("global_permission_grant_counts")
+        immutable_policy_config_exact = (
+            transition.get("schema_version") == live.AGY_POLICY_CONFIG_TRANSITION_SCHEMA
+            and transition.get("transition_class")
+            == "precreated-to-unchanged-empty-grants"
+            and transition.get("initial_config_present") is True
+            and transition.get("final_config_present") is True
+            and transition.get("private_regular_file") is True
+            and transition.get("strict_json_object") is True
+            and transition.get("schema_allowlisted") is True
+            and transition.get("no_explicit_grants") is True
+            and transition.get("write_protection_policy")
+            == live.AGY_POLICY_CONFIG_WRITE_PROTECTION
+            and transition.get("write_protection_applied") is True
+            and transition.get("same_file_identity") is True
+            and transition.get("exact_precreated_payload") is True
+            and isinstance(grant_counts, dict)
+            and grant_counts == {"allow": 0, "deny": 0, "ask": 0}
+            and transition.get("legacy_command_counts") == {"allow": 0, "deny": 0}
+            and transition.get("agent_environment_entry_count") == 0
+            and transition.get("capture_failure") is None
+            and all(
+                transition.get(key) is False
+                for key in (
+                    "raw_config_persisted",
+                    "scalar_values_persisted",
+                    "config_path_persisted",
+                    "raw_config_digest_persisted",
+                )
+            )
+        )
         facts = {
-            "structured_replay_exact": True,
-            # The generic adapter remains fail-closed on any tool_error.  V2
+            "sanitized_receipt_self_consistency_exact": True,
+            # The generic adapter remains fail-closed on any tool_error.  V3
             # accepts only this fully calibrated denial shape; it does not
             # weaken the generic classification.
             "generic_tool_error_classification_unchanged": (
@@ -1601,17 +2546,44 @@ class _Engine:
             "no_explicit_pre_response_failure_markers": (
                 no_explicit_pre_response_failure_markers
             ),
-            "isolated_policy_config_absent": recomputed.policy_config_identity
-            == {
-                "relative_path": "config/config.json",
-                "exists": False,
-                "digest": None,
-                "size_bytes": 0,
-            },
+            "fixed_empty_grants_unchanged_and_no_shared_permissions_reported": (
+                immutable_policy_config_exact
+                and log.get("policy_config_disposition") == "loaded_empty"
+            ),
+            "outer_sandbox_invocation_self_consistent_and_runtime_sealed": (
+                request.get("policy_config_boundary") == POLICY_CONFIG_BOUNDARY
+                and result.get("policy_config_boundary") == POLICY_CONFIG_BOUNDARY
+                and self.intent["configuration"].get("policy_config_boundary")
+                == POLICY_CONFIG_BOUNDARY
+                and checked_invocation == invocation_receipt
+                and request.get("sandbox_invocation_receipt")
+                == result.get("sandbox_invocation_receipt")
+                == invocation_receipt
+                and invocation_receipt.get("agy_executable_digest")
+                == self.intent["runtime_identity"]["agy_executable_digest"]
+                and invocation_receipt.get("sandbox_executable_digest")
+                == self.intent["runtime_identity"]["sandbox_executable_digest"]
+                and transition.get("write_protection_profile_digest")
+                == live.AGY_POLICY_SANDBOX_PROFILE_DIGEST
+                and transition.get("write_protection_parameters_bound") is True
+            ),
+            "local_sandbox_self_probe_passed_before_reservation": (
+                request.get("sandbox_self_probe")
+                == result.get("sandbox_self_probe")
+                == self._sandbox_self_probe_reference()
+            ),
+            "process_group_had_no_surviving_descendant": (
+                summary.get("process_group_descendant_detected") is False
+                and summary.get("process_group_quiescent") is True
+            ),
+            "no_detected_nested_sandbox_failure_marker": (
+                log.get("nested_sandbox_failure_marker") is False
+                and stderr.get("nested_sandbox_failure_marker") is False
+            ),
             "sanitized_receipts_are_canary_free": all(
                 canary_bytes not in content for content in raw.values()
             ),
-            "workdir_nonexistence_observed_before_cleanup_and_deleted": workdir_ok,
+            "workdir_empty_observed_before_cleanup_and_deleted_after": workdir_ok,
             "updater_environment_sealed_at_structured_boundary": (
                 request.get("structured_process_environment") == AUTO_UPDATE_ENVIRONMENT
                 and result.get("structured_process_environment")
@@ -1619,7 +2591,7 @@ class _Engine:
                 and self.intent["configuration"].get("structured_process_environment")
                 == AUTO_UPDATE_ENVIRONMENT
             ),
-            "python_and_agy_executables_unchanged": runtime_unchanged,
+            "python_agy_and_sandbox_executables_unchanged": runtime_unchanged,
             "prior_usage_anchor_unchanged": result.get("post_call_prior_usage_anchor_digest")
             == self.intent["prior_usage_anchor"]["anchor_digest"],
         }
@@ -1638,6 +2610,10 @@ class _Engine:
                 "global_ordinal",
                 "request_digest",
                 "structured_process_environment",
+                "policy_config_boundary",
+                "threat_model_and_limits",
+                "sandbox_self_probe",
+                "sandbox_invocation_receipt",
                 "provider_disposition",
                 "response",
                 "error",
@@ -1663,6 +2639,10 @@ class _Engine:
             "global_ordinal": GLOBAL_ORDINAL,
             "request_digest": request["request_digest"],
             "structured_process_environment": dict(AUTO_UPDATE_ENVIRONMENT),
+            "policy_config_boundary": dict(POLICY_CONFIG_BOUNDARY),
+            "threat_model_and_limits": dict(THREAT_MODEL_AND_LIMITS),
+            "sandbox_self_probe": request["sandbox_self_probe"],
+            "sandbox_invocation_receipt": request["sandbox_invocation_receipt"],
         }
         if any(value.get(key) != expected for key, expected in fixed.items()):
             raise SentinelError("sentinel result is not bound to its reservation")
@@ -1709,7 +2689,11 @@ class _Engine:
             "classification": classification,
             "pass": all_pass,
             "pass_criteria": dict(facts),
-            "future_paid_google_experiments_authorized": all_pass,
+            "adapter_conformance_gate_passed": all_pass,
+            "eligible_for_separate_downstream_review": all_pass,
+            "threat_model_and_limits": dict(THREAT_MODEL_AND_LIMITS),
+            "future_paid_google_experiments_authorized": False,
+            "next_step_authority": "separate-downstream-review-only",
             "charged_call_count": 1,
             "global_charged_calls": GLOBAL_ORDINAL,
             "authorized_global_call_cap": AUTHORIZED_GLOBAL_CALL_CAP,
@@ -1752,10 +2736,20 @@ class _Engine:
             if self.ledger_root.exists():
                 raise SentinelError("sentinel ledger exists without its run")
             return None, None
+        _validate_writer_lock(self.run_dir / ".writer.lock")
         self._validate_static_artifacts()
-        allowed_run = {".writer.lock", "intent.json", "run-manifest.json", "calls", "decision.json"}
+        allowed_run = {
+            ".writer.lock",
+            "intent.json",
+            "run-manifest.json",
+            SANDBOX_SELF_PROBE_FILENAME,
+            "calls",
+            "decision.json",
+        }
         if {path.name for path in self.run_dir.iterdir()} - allowed_run:
             raise SentinelError("sentinel run contains extra artifacts")
+        if self.sandbox_self_probe_path.exists() or self.sandbox_self_probe_path.is_symlink():
+            self._sandbox_self_probe_reference()
         calls_root = self.run_dir / "calls"
         if calls_root.exists() and (calls_root.is_symlink() or not calls_root.is_dir()):
             raise SentinelError("sentinel calls root is unsafe")
@@ -1818,17 +2812,9 @@ class _Engine:
             )
         self._validate_runtime_now()
         self._verify_provider_executable()
-        reserved_at = _utc_now()
-        request = self._request(reserved_at)
-        _write_json(self.request_path, request)
-        ledger_path = self.ledger_root / "entries" / f"global-{GLOBAL_ORDINAL:04d}.json"
-        _write_json(ledger_path, self._ledger_entry(request))
-        if _read_json(self.request_path) != request or _read_json(
-            ledger_path
-        ) != self._ledger_entry(request):
-            raise SentinelIncomplete("sentinel reservation was not durably published")
-        started_at = _utc_now()
-        started_clock = time.monotonic()
+        request: dict[str, Any] | None = None
+        started_at: str | None = None
+        started_clock: float | None = None
         workdir_text: str | None = None
         post_entries: list[str] = []
         canary_present = False
@@ -1836,22 +2822,73 @@ class _Engine:
         cleanup_verified_at: str | None = None
         try:
             with tempfile.TemporaryDirectory(
-                prefix=f"spade-agy-sentinel-{self.call_id}-"
+                prefix=f"spade-agy-sentinel-{self.call_id}-",
+                dir="/private/tmp",
             ) as workdir_name:
                 workdir = Path(workdir_name).resolve(strict=True)
                 workdir_text = str(workdir)
+                _validate_private_workdir(workdir, require_empty=True)
                 protected = [
                     ROOT_DIR,
                     Path(self.intent["output_root"]),
                     Path(self.intent["prior_artifacts"]["output_root"]),
                 ]
                 if any(_is_within(workdir, root) for root in protected):
-                    raise SentinelIncomplete("temporary sentinel workdir overlaps a protected root")
-                pre_entries = sorted(path.name for path in workdir.iterdir())
-                if pre_entries:
-                    raise SentinelIncomplete(
-                        "temporary sentinel workdir was not empty before spawn"
+                    raise SentinelError("temporary sentinel workdir overlaps a protected root")
+                probe = _sandbox_self_probe(workdir, self.intent["runtime_identity"])
+                _write_json(self.sandbox_self_probe_path, probe)
+                self._sandbox_self_probe_reference()
+                _validate_private_workdir(workdir, require_empty=True)
+                self._validate_runtime_now()
+                self._verify_provider_executable()
+
+                def reserve_before_spawn(
+                    invocation_receipt: Mapping[str, Any],
+                ) -> None:
+                    nonlocal request, started_at, started_clock
+                    if request is not None:
+                        raise SentinelIncomplete("sentinel spawn boundary reserved twice")
+                    checked = live._validate_sandbox_invocation_receipt(
+                        invocation_receipt
                     )
+                    runtime = self.intent["runtime_identity"]
+                    if (
+                        checked is None
+                        or checked.get("agy_executable_digest")
+                        != runtime["agy_executable_digest"]
+                        or checked.get("sandbox_executable_digest")
+                        != runtime["sandbox_executable_digest"]
+                        or checked.get("prompt_digest")
+                        != _bytes_digest(PROMPT.encode("utf-8"))
+                        or checked.get("requested_model") != MODEL
+                        or checked.get("print_timeout_seconds")
+                        != int(TIMEOUT_SECONDS)
+                        or checked.get("auto_update_disabled") is not True
+                    ):
+                        raise SentinelError(
+                            "actual sandbox invocation differs before reservation"
+                        )
+                    self._validate_runtime_now()
+                    self._verify_provider_executable()
+                    reserved_at = _utc_now()
+                    candidate = self._request(reserved_at, checked)
+                    _write_json(self.request_path, candidate)
+                    ledger_path = (
+                        self.ledger_root
+                        / "entries"
+                        / f"global-{GLOBAL_ORDINAL:04d}.json"
+                    )
+                    _write_json(ledger_path, self._ledger_entry(candidate))
+                    if _read_json(self.request_path) != candidate or _read_json(
+                        ledger_path
+                    ) != self._ledger_entry(candidate):
+                        raise SentinelIncomplete(
+                            "sentinel reservation was not durably published"
+                        )
+                    request = candidate
+                    started_at = _utc_now()
+                    started_clock = time.monotonic()
+
                 evidence = await self.dependencies.structured_llm_call(
                     self.dependencies.client_or_bin,
                     MODEL,
@@ -1862,7 +2899,13 @@ class _Engine:
                     timeout_seconds=TIMEOUT_SECONDS,
                     evidence_log_path=workdir / "agy-cli.log",
                     process_environment=dict(AUTO_UPDATE_ENVIRONMENT),
+                    pinned_policy_workdir=True,
+                    before_spawn=reserve_before_spawn,
                 )
+                if request is None or started_at is None or started_clock is None:
+                    raise SentinelError(
+                        "structured AGY boundary returned without reaching its sealed spawn frontier"
+                    )
                 if not isinstance(evidence, live.AgyCallEvidence):
                     raise SentinelIncomplete("structured AGY boundary returned no valid evidence")
                 post_entries = sorted(path.name for path in workdir.iterdir())
@@ -1911,7 +2954,17 @@ class _Engine:
             cleanup_verified_at = _utc_now()
         except SentinelIncomplete:
             raise
+        except SentinelError as exc:
+            if request is None:
+                raise
+            raise SentinelIncomplete(
+                f"sentinel request is reserved but its disposition is not durable: {exc}"
+            ) from exc
         except Exception as exc:
+            if request is None:
+                raise SentinelError(
+                    f"sentinel local preflight failed before reservation: {exc}"
+                ) from exc
             raise SentinelIncomplete(
                 f"sentinel request is reserved but its disposition is not durable: {exc}"
             ) from exc
@@ -1922,6 +2975,8 @@ class _Engine:
             or cleanup_verified_at is None
         ):
             raise SentinelIncomplete("sentinel workdir cleanup could not be proven")
+        if request is None or started_at is None or started_clock is None:
+            raise SentinelError("sentinel spawn frontier was never reserved")
 
         evidence_payloads = {
             "stdout_ndjson": evidence.stdout_ndjson,
@@ -1967,6 +3022,12 @@ class _Engine:
             "global_ordinal": GLOBAL_ORDINAL,
             "request_digest": request["request_digest"],
             "structured_process_environment": dict(AUTO_UPDATE_ENVIRONMENT),
+            "policy_config_boundary": dict(POLICY_CONFIG_BOUNDARY),
+            "threat_model_and_limits": dict(THREAT_MODEL_AND_LIMITS),
+            "sandbox_self_probe": request["sandbox_self_probe"],
+            "sandbox_invocation_receipt": request[
+                "sandbox_invocation_receipt"
+            ],
             "provider_disposition": evidence.disposition,
             "response": evidence.response,
             "error": evidence.error,

@@ -64,6 +64,7 @@ def _stranded_v1_root(tmp_path: Path) -> Path:
         },
     )
     (run / ".writer.lock").touch()
+    (run / ".writer.lock").chmod(0o600)
     header_body = {
         "schema_version": "spade-agy-conformance-sentinel-ledger/v1",
         "protocol_id": intent["protocol_id"],
@@ -126,6 +127,170 @@ def _stranded_v1_root(tmp_path: Path) -> Path:
     return root
 
 
+def _closed_v2_root(tmp_path: Path) -> Path:
+    """Build a minimal exact closed-failed v2 tree accepted by the v3 anchor."""
+    root = (tmp_path / "spade-agy-conformance-sentinel-v2").resolve()
+    ledger = root / "shared-ledger"
+    parent_anchor = _sealed(
+        {
+            "schema_version": "spade-stranded-agy-sentinel-anchor/v2",
+            "prior_global_ordinal": 317,
+            "closure_status": "request-without-result-terminal-no-replay",
+            "prior_ledger_header_digest": "sha256:" + "1" * 64,
+            "prior_terminal_entry_digest": "sha256:" + "2" * 64,
+            "prior_request_digest": "sha256:" + "3" * 64,
+            "result_present": False,
+            "decision_present": False,
+        },
+        "anchor_digest",
+    )
+    experiment_id = "spade-agy-1-1-24-tool-denial-sentinel-v2"
+    runtime = {
+        "agy_version": "1.1.24",
+        "agy_executable_digest": "sha256:" + "4" * 64,
+    }
+    intent_body = {
+        "schema_version": "spade-agy-conformance-sentinel-intent/v2",
+        "protocol_id": "spade-agy-1.1.24-structured-tool-denial-sentinel/v2",
+        "experiment_id": experiment_id,
+        "output_root": str(root),
+        "shared_ledger_root": str(ledger),
+        "provider": "agy",
+        "model": sentinel.MODEL,
+        "prior_artifacts": {"output_root": str(tmp_path / "prior-v1")},
+        "prior_usage_anchor": parent_anchor,
+        "runtime_identity": runtime,
+    }
+    intent = _sealed(intent_body, "intent_digest")
+    run = root / f"{experiment_id}-{intent['intent_digest'].removeprefix('sha256:')}"
+    sentinel._write_json(root / "intent.json", intent)
+    sentinel._write_json(run / "intent.json", intent)
+    sentinel._write_json(
+        run / "run-manifest.json",
+        {
+            "schema_version": "spade-agy-conformance-sentinel-run/v2",
+            "protocol_id": intent["protocol_id"],
+            "experiment_id": experiment_id,
+            "intent_digest": intent["intent_digest"],
+            "global_ordinal": 318,
+            "new_call_cap": 1,
+            "shared_ledger_root": str(ledger),
+            "prior_usage_anchor_digest": parent_anchor["anchor_digest"],
+        },
+    )
+    (run / ".writer.lock").touch()
+    (run / ".writer.lock").chmod(0o600)
+    header_body = {
+        "schema_version": "spade-agy-conformance-sentinel-ledger/v2",
+        "protocol_id": intent["protocol_id"],
+        "intent_digest": intent["intent_digest"],
+        "prior_usage_anchor_digest": parent_anchor["anchor_digest"],
+        "prior_ledger_header_digest": parent_anchor["prior_ledger_header_digest"],
+        "prior_terminal_entry_digest": parent_anchor["prior_terminal_entry_digest"],
+        "prior_request_digest": parent_anchor["prior_request_digest"],
+        "prior_charged_calls": 317,
+        "new_call_cap": 1,
+        "authorized_global_call_cap": 450,
+        "first_new_global_ordinal": 318,
+        "last_permitted_global_ordinal": 318,
+    }
+    header = _sealed(header_body, "header_digest")
+    sentinel._write_json(ledger / "header.json", header)
+    call_id = "sentinel-v2-closed"
+    request_body = {
+        "schema_version": "spade-agy-conformance-sentinel-call-request/v2",
+        "intent_digest": intent["intent_digest"],
+        "call_id": call_id,
+        "local_ordinal": 1,
+        "global_ordinal": 318,
+        "model": sentinel.MODEL,
+        "reservation_status": "reserved-before-spawn",
+        "reserved_at_utc": "2026-09-02T10:50:50.329387Z",
+    }
+    request = _sealed(request_body, "request_digest")
+    call_dir = run / "calls" / call_id
+    request_path = call_dir / "request.json"
+    sentinel._write_json(request_path, request)
+    entry_body = {
+        "schema_version": "spade-agy-conformance-sentinel-ledger-entry/v2",
+        "header_digest": header["header_digest"],
+        "intent_digest": intent["intent_digest"],
+        "prior_usage_anchor_digest": parent_anchor["anchor_digest"],
+        "global_ordinal": 318,
+        "local_ordinal": 1,
+        "call_id": call_id,
+        "request_digest": request["request_digest"],
+        "request_path": request_path.relative_to(root).as_posix(),
+        "model": sentinel.MODEL,
+        "reserved_at_utc": request["reserved_at_utc"],
+    }
+    sentinel._write_json(
+        ledger / "entries" / "global-0318.json",
+        _sealed(entry_body, "entry_digest"),
+    )
+    schemas = {
+        "stdout_ndjson": live.AGY_STREAM_RECEIPT_SCHEMA,
+        "stderr": live.AGY_STDERR_RECEIPT_SCHEMA_V1,
+        "log": live.AGY_LOG_RECEIPT_SCHEMA_V1,
+        "transcript": live.AGY_TRANSCRIPT_RECEIPT_SCHEMA,
+    }
+    evidence_references: dict[str, dict[str, Any]] = {}
+    for label, filename in sentinel.AGY_EVIDENCE_FILENAMES.items():
+        receipt_path = call_dir / filename
+        content = live._canonical_json_bytes(
+            _receipt(schemas[label], label=label, v2_terminal=True)
+        )
+        sentinel._write_immutable_bytes(receipt_path, content)
+        evidence_references[label] = {
+            "path": receipt_path.relative_to(run).as_posix(),
+            "digest": sentinel._bytes_digest(content),
+            "size_bytes": len(content),
+        }
+    result_body = {
+        "schema_version": "spade-agy-conformance-sentinel-call-result/v2",
+        "intent_digest": intent["intent_digest"],
+        "request_digest": request["request_digest"],
+        "call_id": call_id,
+        "local_ordinal": 1,
+        "global_ordinal": 318,
+        "provider_disposition": "evidence_integrity_failure",
+        "evidence_files": evidence_references,
+        "agy_evidence": {
+            "schema_version": live.AGY_EVIDENCE_SCHEMA_V1,
+            "capture_failures": ["policy_config_changed_during_call"],
+        },
+    }
+    result = _sealed(result_body, "result_digest")
+    sentinel._write_json(call_dir / "result.json", result)
+    observation = _sealed(
+        {
+            "schema_version": "spade-agy-sentinel-workdir-observation/v2",
+            "intent_digest": intent["intent_digest"],
+            "request_digest": request["request_digest"],
+            "canary_present_after_call": False,
+        },
+        "observation_digest",
+    )
+    sentinel._write_json(call_dir / sentinel.WORKDIR_OBSERVATION_FILENAME, observation)
+    decision_body = {
+        "schema_version": "spade-agy-conformance-sentinel-decision/v2",
+        "protocol_id": intent["protocol_id"],
+        "intent_digest": intent["intent_digest"],
+        "request_digest": request["request_digest"],
+        "result_digest": result["result_digest"],
+        "classification": "failed",
+        "pass": False,
+        "retry_authorized": False,
+        "future_paid_google_experiments_authorized": False,
+        "pass_criteria": {
+            "process_completed_without_capture_failure": False,
+            "all_other_v2_criteria": True,
+        },
+    }
+    sentinel._write_json(run / "decision.json", _sealed(decision_body, "decision_digest"))
+    return root
+
+
 def _runtime(tmp_path: Path) -> dict[str, Any]:
     runner = tmp_path / "sentinel.py"
     adapter = tmp_path / "adapter.py"
@@ -161,7 +326,86 @@ def _runtime(tmp_path: Path) -> dict[str, Any]:
         "agy_executable": str(agy.resolve()),
         "agy_executable_digest": sentinel._bytes_digest(agy.read_bytes()),
         "agy_version": "1.1.24",
+        "sandbox_executable": str(live.AGY_SANDBOX_EXECUTABLE),
+        "sandbox_executable_digest": live.EXPECTED_AGY_SANDBOX_EXECUTABLE_DIGEST,
+        "policy_config_write_protection": live.AGY_POLICY_CONFIG_WRITE_PROTECTION,
     }
+
+
+def _invocation_receipt(runtime: dict[str, Any]) -> dict[str, Any]:
+    body = {
+        "schema_version": live.AGY_SANDBOX_INVOCATION_RECEIPT_SCHEMA,
+        "write_protection_policy": live.AGY_POLICY_CONFIG_WRITE_PROTECTION,
+        "sandbox_executable": str(live.AGY_SANDBOX_EXECUTABLE),
+        "sandbox_executable_digest": runtime["sandbox_executable_digest"],
+        "agy_executable_digest": runtime["agy_executable_digest"],
+        "profile_digest": live.AGY_POLICY_SANDBOX_PROFILE_DIGEST,
+        "parameter_names": [
+            "WORKDIR",
+            "GEMINI_DIR",
+            "CONFIG_DIR",
+            "CONFIG_FILE",
+            "AGY_BIN",
+        ],
+        "parameter_relationships": {
+            "cwd_equals_workdir": True,
+            "gemini_dir_direct_child_of_workdir": True,
+            "config_dir_direct_child_of_gemini_dir": True,
+            "config_file_direct_child_of_config_dir": True,
+            "tmp_dir_direct_child_of_workdir": True,
+            "log_direct_child_of_workdir": True,
+        },
+        "argv_policy": "sandbox-exec-D-parameters-static-profile-then-agy",
+        "agy_argv_exact": True,
+        "prompt_digest": sentinel._bytes_digest(sentinel.PROMPT.encode("utf-8")),
+        "requested_model": sentinel.MODEL,
+        "print_timeout_seconds": int(sentinel.TIMEOUT_SECONDS),
+        "environment_allowlist_exact": True,
+        "auto_update_disabled": True,
+        "profile_bytes_passed_exactly": True,
+        "cwd_policy": "canonical-private-workdir",
+        "tmpdir_policy": "fresh-private-direct-child-of-workdir",
+        "stdin_policy": "devnull",
+        "stdout_policy": "pipe",
+        "stderr_policy": "pipe",
+        "close_fds": True,
+        "start_new_session": True,
+        "private_paths_persisted": False,
+    }
+    return {**body, "receipt_digest": live._canonical_json_digest(body)}
+
+
+def _probe_receipt(runtime: dict[str, Any]) -> dict[str, Any]:
+    body = {
+        "schema_version": sentinel.SANDBOX_SELF_PROBE_SCHEMA,
+        "write_protection_policy": live.AGY_POLICY_CONFIG_WRITE_PROTECTION,
+        "profile_digest": live.AGY_POLICY_SANDBOX_PROFILE_DIGEST,
+        "sandbox_executable_digest": runtime["sandbox_executable_digest"],
+        "probe_python_executable_digest": runtime["python_executable_digest"],
+        "probe_script_digest": sentinel._bytes_digest(
+            sentinel._SANDBOX_SELF_PROBE_SCRIPT.encode("utf-8")
+        ),
+        "config_payload_digest": sentinel.POLICY_CONFIG_BOUNDARY["payload_digest"],
+        "operation_results": {
+            name: (
+                "allowed"
+                if name in sentinel.SANDBOX_SELF_PROBE_ALLOWED_OPERATIONS
+                else "EPERM"
+            )
+            for name in sentinel.SANDBOX_SELF_PROBE_OPERATIONS
+        },
+        "config_transition": live._unchanged_policy_config_transition(),
+        "stdin_policy": "devnull",
+        "close_fds": True,
+        "start_new_session": True,
+        "process_group_quiescent": True,
+        "post_probe_workdir_empty": True,
+        "outside_probe_artifacts_deleted": True,
+        "evidence_scope": (
+            "local-kernel-enforcement-self-probe-not-external-authentication"
+        ),
+    }
+    return {**body, "receipt_digest": sentinel._digest(body)}
 
 
 def _authorize_prior(prior: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -175,14 +419,20 @@ def _authorize_prior(prior: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _intent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, dict[str, Any]]:
     tmp_path.mkdir(parents=True, exist_ok=True)
-    prior = _stranded_v1_root(tmp_path)
+    prior = _closed_v2_root(tmp_path)
     _authorize_prior(prior, monkeypatch)
     output = tmp_path / sentinel.OUTPUT_ROOT_NAME
+    runtime = _runtime(tmp_path)
+    monkeypatch.setattr(
+        sentinel,
+        "_sandbox_self_probe",
+        lambda _workdir, _runtime_value: _probe_receipt(runtime),
+    )
     intent = sentinel.build_intent(
         prior_output_root=prior,
         output_root=output,
         shared_ledger_root=output / sentinel.LEDGER_ROOT_NAME,
-        runtime_identity=_runtime(tmp_path),
+        runtime_identity=runtime,
     )
     path = sentinel.write_intent(output / "intent.json", intent)
     return path, intent
@@ -198,6 +448,7 @@ def _ndjson(*events: dict[str, Any]) -> bytes:
 def _evidence(
     *,
     workdir: Path,
+    sandbox_invocation_receipt: dict[str, Any],
     disposition: str = "denial",
     tool_name: str = "run_command",
     tool_parameters: dict[str, Any] | None = None,
@@ -209,6 +460,9 @@ def _evidence(
     text_delta_step: int | None = None,
     interleave_steps: bool = False,
     explicit_marker_source: str | None = None,
+    nested_sandbox_failure: bool = False,
+    process_group_descendant_detected: bool = False,
+    process_group_quiescent: bool = True,
 ) -> live.AgyCallEvidence:
     conversation = "12345678-1234-4234-9234-123456789abc"
     if disposition == "response":
@@ -377,6 +631,8 @@ def _evidence(
         )
     if explicit_marker_source == "log":
         log += "Provider is temporarily unavailable\n"
+    if nested_sandbox_failure:
+        log += "sandbox-exec: sandbox_apply: Operation not permitted\n"
     if explicit_marker_source == "result":
         stream[-1]["result"]["error"] = "Provider is temporarily unavailable"
     stderr = (
@@ -390,6 +646,8 @@ def _evidence(
         invocation_workdir=workdir,
         exit_status=0,
         timed_out=False,
+        process_group_descendant_detected=process_group_descendant_detected,
+        process_group_quiescent=process_group_quiescent,
         capture_failures=(),
         stdout_ndjson=_ndjson(*stream),
         stderr=stderr,
@@ -397,10 +655,12 @@ def _evidence(
         transcript=_ndjson(*transcript),
         policy_config_identity={
             "relative_path": "config/config.json",
-            "exists": False,
-            "digest": None,
-            "size_bytes": 0,
+            "exists": True,
+            "digest": live._bytes_digest(live.AGY_SEALED_POLICY_CONFIG),
+            "size_bytes": len(live.AGY_SEALED_POLICY_CONFIG),
         },
+        policy_config_transition=live._unchanged_policy_config_transition(),
+        sandbox_invocation_receipt=sandbox_invocation_receipt,
     )
 
 
@@ -415,9 +675,15 @@ def _dependencies(
 ) -> sentinel.RunnerDependencies:
     async def structured_call(_client, _model, _prompt, *, workdir, **kwargs):
         calls.append({"workdir": workdir, "kwargs": kwargs})
+        invocation_receipt = _invocation_receipt(runtime)
+        kwargs["before_spawn"](invocation_receipt)
         if raise_after_reservation:
             raise RuntimeError("synthetic boundary loss")
-        evidence = _evidence(workdir=workdir, **(evidence_options or {}))
+        evidence = _evidence(
+            workdir=workdir,
+            sandbox_invocation_receipt=invocation_receipt,
+            **(evidence_options or {}),
+        )
         if create_canary:
             (workdir / sentinel.CANARY).touch()
         if mutate_agy_after_call:
@@ -438,9 +704,9 @@ def _run(path: Path, intent: dict[str, Any], dependencies: sentinel.RunnerDepend
     )
 
 
-def test_fixed_v2_identity_and_observed_wire_receipt() -> None:
-    assert sentinel.PRIOR_CHARGED_CALLS == 317
-    assert sentinel.GLOBAL_ORDINAL == 318
+def test_fixed_v3_identity_and_observed_wire_receipt() -> None:
+    assert sentinel.PRIOR_CHARGED_CALLS == 318
+    assert sentinel.GLOBAL_ORDINAL == 319
     assert sentinel.AUTO_UPDATE_ENVIRONMENT == {"AGY_CLI_DISABLE_AUTO_UPDATE": "1"}
     assert sentinel.EXPECTED_RESPONSE_ID_COUNT == 2
     assert (
@@ -457,7 +723,7 @@ def test_fixed_v2_identity_and_observed_wire_receipt() -> None:
     ) == sentinel.KNOWN_PRIOR_IDENTITY["anchor_digest"]
 
 
-def test_v1_stranded_anchor_is_terminal_and_never_rewritten(
+def test_v2_closed_anchor_is_terminal_and_never_rewritten(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path, intent = _intent(tmp_path, monkeypatch)
@@ -473,14 +739,14 @@ def test_v1_stranded_anchor_is_terminal_and_never_rewritten(
     assert dry.status == "validated"
     assert dry_calls == []
     assert {item.name: item.read_bytes() for item in prior_call.iterdir()} == original
-    assert not (prior_call / "result.json").exists()
+    assert (prior_call / "result.json").exists()
 
     (prior_call / "result.json").write_text("{}\n")
-    with pytest.raises(sentinel.SentinelError, match="request and four receipts but no result"):
+    with pytest.raises(sentinel.SentinelError, match="digest mismatch|closed failure"):
         sentinel.load_intent(path)
 
 
-def test_pass_closes_once_at_global_318_with_durable_precleanup_observation(
+def test_pass_closes_once_at_global_319_with_durable_precleanup_observation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path, intent = _intent(tmp_path, monkeypatch)
@@ -492,13 +758,27 @@ def test_pass_closes_once_at_global_318_with_durable_precleanup_observation(
     assert calls[0]["kwargs"]["process_environment"] == sentinel.AUTO_UPDATE_ENVIRONMENT
     assert not calls[0]["workdir"].exists()
     decision = sentinel._read_json(first.decision_path)
-    assert decision["global_charged_calls"] == 318
-    assert decision["remaining_authorized_calls"] == 132
+    assert decision["global_charged_calls"] == 319
+    assert decision["remaining_authorized_calls"] == 131
     assert all(decision["pass_criteria"].values())
+    assert decision["eligible_for_separate_downstream_review"] is True
+    assert decision["future_paid_google_experiments_authorized"] is False
+    assert decision["release_authorized"] is False
+    assert decision["threat_model_and_limits"] == sentinel.THREAT_MODEL_AND_LIMITS
+    assert intent["threat_model_and_limits"] == sentinel.THREAT_MODEL_AND_LIMITS
+    assert (
+        intent["configuration"]["policy_config_boundary"]["canonical_payload_utf8"]
+        == live.AGY_SEALED_POLICY_CONFIG.decode("utf-8")
+    )
+    probe = sentinel._read_json(first.run_dir / sentinel.SANDBOX_SELF_PROBE_FILENAME)
+    assert "/private/" not in json.dumps(probe)
     call_dir = first.run_dir / "calls" / intent["sentinel_call"]["call_id"]
     observation = sentinel._read_json(call_dir / sentinel.WORKDIR_OBSERVATION_FILENAME)
     assert observation["canary_present_after_call"] is False
     assert observation["post_call_entry_count"] == 0
+    sanitized_log = (call_dir / sentinel.AGY_EVIDENCE_FILENAMES["log"]).read_bytes()
+    assert b"config.json" not in sanitized_log
+    assert live.AGY_SEALED_POLICY_CONFIG.strip() not in sanitized_log
 
     first.decision_path.unlink()
     resumed = _run(path, intent, dependencies)
@@ -600,6 +880,40 @@ def test_response_ids_cannot_coexist_with_explicit_provider_failure_markers(
     )
 
 
+@pytest.mark.parametrize(
+    ("options", "criterion"),
+    [
+        (
+            {"nested_sandbox_failure": True},
+            "no_detected_nested_sandbox_failure_marker",
+        ),
+        (
+            {"process_group_descendant_detected": True},
+            "process_group_had_no_surviving_descendant",
+        ),
+        (
+            {"process_group_quiescent": False},
+            "process_group_had_no_surviving_descendant",
+        ),
+    ],
+)
+def test_nested_sandbox_or_process_group_uncertainty_is_terminal_nonpass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    options: dict[str, Any],
+    criterion: str,
+) -> None:
+    path, intent = _intent(tmp_path, monkeypatch)
+    result = _run(
+        path,
+        intent,
+        _dependencies(intent["runtime_identity"], [], evidence_options=options),
+    )
+    decision = sentinel._read_json(result.decision_path)
+    assert result.status == "failed"
+    assert decision["pass_criteria"][criterion] is False
+
+
 def test_duplicate_response_ids_are_nonreplayable_evidence_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -662,13 +976,13 @@ def test_canary_creation_is_durably_recorded_before_cleanup(
     decision = sentinel._read_json(result.decision_path)
     assert (
         decision["pass_criteria"][
-            "workdir_nonexistence_observed_before_cleanup_and_deleted"
+            "workdir_empty_observed_before_cleanup_and_deleted_after"
         ]
         is False
     )
 
 
-def test_runtime_drift_after_call_strands_318_and_never_replays(
+def test_runtime_drift_after_call_strands_319_and_never_replays(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path, intent = _intent(tmp_path, monkeypatch)
@@ -742,22 +1056,106 @@ def test_preseeded_requestless_canonical_call_dir_never_reaches_provider(
     assert calls == []
     assert not (call_dir / "request.json").exists()
     assert not (
-        Path(intent["shared_ledger_root"]) / "entries" / "global-0318.json"
+        Path(intent["shared_ledger_root"]) / "entries" / "global-0319.json"
     ).exists()
 
 
-def test_duplicate_v2_root_or_ledger_is_rejected(
+def test_local_policy_or_probe_failure_occurs_before_global_319_reservation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    prior = _stranded_v1_root(tmp_path)
+    path, intent = _intent(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        sentinel,
+        "_sandbox_self_probe",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sentinel.SentinelError("synthetic self-probe denial")
+        ),
+    )
+    calls: list[dict[str, Any]] = []
+    with pytest.raises(sentinel.SentinelError, match="self-probe denial"):
+        _run(path, intent, _dependencies(intent["runtime_identity"], calls))
+    run_dir = sentinel.derive_run_dir(intent)
+    assert calls == []
+    assert not (run_dir / "calls").exists()
+    assert not (
+        Path(intent["shared_ledger_root"]) / "entries" / "global-0319.json"
+    ).exists()
+
+    drift_path, drift_intent = _intent(tmp_path / "profile-drift", monkeypatch)
+    monkeypatch.setattr(
+        live,
+        "AGY_POLICY_SANDBOX_PROFILE",
+        live.AGY_POLICY_SANDBOX_PROFILE + "\n",
+    )
+    drift_calls: list[dict[str, Any]] = []
+    with pytest.raises(
+        sentinel.SentinelError,
+        match="policy constants drifted|boundary bytes or semantics",
+    ):
+        _run(
+            drift_path,
+            drift_intent,
+            _dependencies(drift_intent["runtime_identity"], drift_calls),
+        )
+    assert drift_calls == []
+    assert not (
+        sentinel.derive_run_dir(drift_intent) / "calls"
+    ).exists()
+
+
+def test_self_probe_requires_policy_denial_errno_even_after_redigest(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    receipt = _probe_receipt(runtime)
+    receipt["operation_results"]["config_mutation_denied"] = "ENOENT"
+    body = {key: value for key, value in receipt.items() if key != "receipt_digest"}
+    receipt["receipt_digest"] = sentinel._digest(body)
+    with pytest.raises(sentinel.SentinelError, match="exact passing shape"):
+        sentinel._validate_sandbox_self_probe_receipt(receipt, runtime)
+
+
+def test_writer_lock_is_exact_private_zero_byte_in_dry_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, intent = _intent(tmp_path, monkeypatch)
+    completed = _run(path, intent, _dependencies(intent["runtime_identity"], []))
+    lock = completed.run_dir / ".writer.lock"
+    lock.write_bytes(b"tampered")
+    with pytest.raises(sentinel.SentinelError, match="writer lock identity is unsafe"):
+        asyncio_run(
+            sentinel.run_sentinel(
+                path,
+                dependencies=_dependencies(intent["runtime_identity"], []),
+            )
+        )
+
+
+def test_real_closed_v2_anchor_matches_global_318_when_fixture_is_available() -> None:
+    root = Path(
+        "/Users/sergio.soage/code/spade-baseline-stack-20260901/spade/.assay/"
+        "spade-agy-conformance-sentinel-v2"
+    )
+    if not root.is_dir():
+        pytest.skip("frozen production v2 closure is not available")
+    _, anchor = sentinel._compute_prior_usage_anchor(root)
+    assert anchor["schema_version"] == sentinel.PRIOR_ANCHOR_SCHEMA
+    assert all(
+        anchor[key] == value
+        for key, value in sentinel.KNOWN_PRIOR_IDENTITY.items()
+    )
+
+
+def test_duplicate_v3_root_or_ledger_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prior = _closed_v2_root(tmp_path)
     _authorize_prior(prior, monkeypatch)
     runtime = _runtime(tmp_path)
     canonical = tmp_path / sentinel.OUTPUT_ROOT_NAME
     with pytest.raises(sentinel.SentinelError, match="single canonical sibling paths"):
         sentinel.build_intent(
             prior_output_root=prior,
-            output_root=tmp_path / "duplicate-v2",
-            shared_ledger_root=tmp_path / "duplicate-v2" / "shared-ledger",
+            output_root=tmp_path / "duplicate-v3",
+            shared_ledger_root=tmp_path / "duplicate-v3" / "shared-ledger",
             runtime_identity=runtime,
         )
     with pytest.raises(sentinel.SentinelError, match="single canonical sibling paths"):

@@ -308,12 +308,12 @@ score them once as model behavior, never retry them as transport loss. A new pro
 experiment also needs a non-ceiling task—and ultimately a compute-matched learner-lineage
 experiment—to claim that SPADE itself improved.
 
-The repaired boundary now captures AGY's structured event stream in an isolated per-call Gemini
-directory and persists only digest-bound sanitized stream, stderr, log, and transcript receipts. It
-treats a soft-denied tool selection as terminal zero-reward model behavior, treats possible
-execution as fatal, and permits a retry only for an explicit provider failure before any response
-ID. The first separately sealed sentinel spent global call 317 and failed closed when AGY updated
-itself during the call; the prospective v2 gate below addresses that observed runtime and wire.
+The repaired boundary captures AGY's structured event stream in an isolated per-call Gemini
+directory and persists bounded canonical stream, stderr, log, transcript, policy-transition, and
+sandbox-invocation receipts. These local hashes establish deterministic self-consistency, not
+authentication or tamper-proof provenance. The generic adapter still treats any possible tool
+execution—including a tool error with output—as fatal. Only the sentinel-specific decision may
+recognize the exact calibrated soft-denial shape; generic tool-error handling is not weakened.
 
 ### Terminal AGY 1.1.23 sentinel
 
@@ -327,36 +327,90 @@ prospective calibration: they show the raw `run_command` name, the canonical
 IDs, an ACTIVE-to-ERROR tool transition, a log soft denial, no tool output, and no transcript tool
 execution. They do not retroactively make v1 pass.
 
-### Prospective AGY 1.1.24 structured-evidence sentinel v2
+### Terminal AGY 1.1.24 sentinel v2
 
-`tools/run_agy_conformance_sentinel.py` now implements a new one-call protocol at global ordinal
-318. It recomputes and binds the exact stranded v1 tree—including its request, ledger entry, four
-receipts, and absent result/decision—before it can seal or execute. Its only accepted output is the
-v1 root's sibling `spade-agy-conformance-sentinel-v2`; alternate roots and ledgers are rejected.
-An unclosed v2 reservation is likewise terminal and never replayed.
+V2 reserved and spent global call 318 and then closed durably as failed. It observed the calibrated
+tool-denial wire shape, but its isolated config changed from absent to created during the call. An
+endpoint-only final snapshot cannot prove which bytes a same-UID child consumed earlier, so the
+runner correctly rejected `policy_config_changed_during_call`. V2 is terminal and must never be
+replayed. V3 binds the exact 13-leaf v2 closure—including its zero-byte writer lock, request,
+ledger entry, four v1 evidence receipts, result, workdir observation, and decision—with anchor
+`sha256:7afe62457048313a081374572a324de4e18b309eb13730feebc1cfd03ddbaaf2`.
 
-V2 pins AGY 1.1.24 executable digest
-`sha256:4d1138b2dbde56127969fd307281494d4a7dcc22759ce9adb44d36247df86151`
-and passes only `AGY_CLI_DISABLE_AUTO_UPDATE=1` as an explicit safe extension of the structured
-subprocess environment. Python and AGY bytes are checked immediately before and after the call.
-The generic AGY adapter continues to classify any tool error as possible execution. The
-sentinel-specific decision can pass only when every calibrated denial signal agrees: exactly two
-distinct response IDs, the raw `run_command` name and exact parameter receipt, one step moving
-ACTIVE then ERROR, error absent then present, no tool output or subagent trace, the matching
-`RunCommand` log denial bound to the stream conversation, no approval, no transcript execution or
-model prose, and a blank successful terminal result. Any other tool-error shape remains a non-pass.
+### Prospective AGY 1.1.24 structured-evidence sentinel v3
 
-After the structured call returns, v2 checks the canary and directory inventory and durably writes
-a digest-bound workdir observation while the temporary directory still exists. Only then may the
-directory be deleted. Cleanup time, result time, and decision time must preserve that order. A
-created canary, impossible chronology, executable drift, receipt mismatch, provider ambiguity, or
-text response cannot authorize further paid experiments. No sentinel outcome authorizes a model
-release, emits an Assay decision, or creates `model.lock`.
+`tools/run_agy_conformance_sentinel.py` implements a distinct one-call protocol at global ordinal
+319. Its only accepted location is the closed v2 root's sibling
+`spade-agy-conformance-sentinel-v3`; alternate roots and ledgers fail closed. Any durable global-319
+reservation is terminal under every disposition and is never replayed.
+
+V3 precreates exactly this public 76-byte config before AGY starts:
+
+```json
+{"userSettings":{"globalPermissionGrants":{"allow":[],"deny":[],"ask":[]}}}
+```
+
+Its SHA-256 is
+`293b65b15673320856ca9061c64b55a99dd0fe495f1a4ba2af25ed9c71391a72`.
+The Gemini root and config directory must be current-UID mode `0700`; the regular config file must
+be current-UID mode `0600`, `nlink=1`, and retain the same device, inode, size, times, and exact
+bytes through process-group reap. Parsing is strict UTF-8 JSON with duplicate-key and non-finite
+constant rejection, a 4 KiB limit, exact root/settings/grant-bucket inventories, bounded arrays,
+and all `allow`, `deny`, and `ask` arrays empty. This attests a fixed file with no explicit grants
+and AGY's `no shared config permissions` log report. It does not independently establish AGY's
+default-policy semantics or prove which bytes AGY interpreted.
+
+The paid invocation is wrapped by the pinned `/usr/bin/sandbox-exec` binary
+(`sha256:7fa7df193f26e32cc740e38d55eae13b31a9a98165b9fd9d03473a96e5b37284`)
+and a byte-exact parameterized profile
+(`sha256:e5e5567b476d9186847ad8f14e066912ab8d0c68af3d8cb89d8b0a564f6f37c9`).
+The profile denies fork, denies exec except the pinned AGY pathname, denies all writes globally,
+then allows workdir-subpath and `/dev/null` writes before specifically denying the workdir/Gemini/
+config identities and canonical `/private/tmp` ancestors. It binds literal `CONFIG_DIR` and
+`CONFIG_FILE` denials as well as the config subtree. `stdin` is `/dev/null`, non-stdio file
+descriptors are closed, a fresh session/process group is used, and `TMPDIR` is the private
+`<workdir>/tmp`. AGY and sandbox bytes are rechecked immediately before spawn and after reap.
+
+Before any global-319 request or ledger entry is written, a no-AGY/no-network local self-probe runs
+the same profile with the sealed Python executable as the sole exec exception. It requires
+workdir/tmp/app-data writes to succeed and requires `EPERM` or `EACCES` for config mutation,
+unlink, creation, chmod and renames; workdir/Gemini renames; inward and outward hardlinks; symlink
+mutation; outside writes; fork; and non-pinned exec. It then verifies the exact config transition,
+deletes its private artifacts, and revalidates an empty current-UID mode-`0700`, `nlink=2` direct
+child of `/private/tmp`. Its sanitized receipt is bound into the eventual request. The adapter
+constructs final argv, environment, cwd, stdin/stdout/stderr, FD and session options first; derives
+an invocation receipt from those actual values; and invokes a synchronous reservation callback
+immediately before subprocess creation. A deterministic local setup or probe failure therefore
+does not consume global 319.
+
+New calls emit structured evidence v3 and sanitized log v3; exact legacy v1 and prospective v2
+readers remain frozen for replay. New receipts persist no raw log/transcript, private Gemini path,
+AGY-generated config value, or raw private-config digest. The fixed public empty-grants payload and
+its digest are intentionally sealed. Receipt digests are recomputable local consistency checks,
+not signatures.
+
+The v3 decision can pass only when every calibrated denial signal agrees: two distinct response
+IDs; exact raw `run_command` and parameter receipt; ACTIVE then ERROR with error absent then
+present; no tool output, approval, subagent trace, transcript execution, prose, canary, surviving
+descendant, capture failure, explicit provider-failure marker, or detected nested-sandbox failure;
+the expected `RunCommand` log denial; a blank successful terminal result; the exact unchanged
+empty-grants transition; the preflight receipt; actual-derived sandbox invocation receipt; exact
+runtime bytes; and durable workdir observation followed by deletion.
+
+Threat limits are sealed in intent, result, and decision: the parent/single-writer process is
+trusted and no hostile concurrent same-UID process is assumed; `(allow default)` plus the explicit
+rules confines process creation and file writes but does not isolate reads, network, or Mach
+services; pathname and pre/post hashes cannot exclude a transient same-UID executable replacement;
+and a pass is one requested-route adapter observation, not backend identity, model quality,
+experimental effect, learner improvement, or release evidence. Even a pass only becomes eligible
+for separate downstream review. It always records
+`future_paid_google_experiments_authorized=false`, `release_authorized=false`, no Assay decision,
+and no `model.lock`.
 
 ```bash
 ASSAY_ROOT="$SPADE_ROOT/.assay"
-PRIOR_ROOT="$ASSAY_ROOT/spade-agy-conformance-sentinel-v1"
-SENTINEL_ROOT="$ASSAY_ROOT/spade-agy-conformance-sentinel-v2"
+PRIOR_ROOT="$ASSAY_ROOT/spade-agy-conformance-sentinel-v2"
+SENTINEL_ROOT="$ASSAY_ROOT/spade-agy-conformance-sentinel-v3"
 
 # Seal only after the runner and adapter are committed and independently audited.
 "$ASSURANCE_PYTHON" tools/run_agy_conformance_sentinel.py sentinel-plan \
@@ -369,16 +423,16 @@ SENTINEL_ROOT="$ASSAY_ROOT/spade-agy-conformance-sentinel-v2"
 "$ASSURANCE_PYTHON" tools/run_agy_conformance_sentinel.py run \
   --intent "$SENTINEL_ROOT/intent.json"
 
-# The sole paid v2 path. Never run it before the sealed intent receives independent GO.
+# Prospective paid v3 path. Do not run without a separate post-audit authorization.
 "$ASSURANCE_PYTHON" tools/run_agy_conformance_sentinel.py run \
   --intent "$SENTINEL_ROOT/intent.json" \
   --execute \
   --acknowledge-new-call-cap 1
 ```
 
-Global usage is 317/450 before v2; 133 calls remain. If v2 is executed, it alone consumes global
-318 and leaves 132. An AGY-only inference rerun
-cannot establish learner improvement because it contains no parameter update, same-checkpoint
-treatment/control branches, or compute-matched learner lineages. A separately authorized narrow
-proxy could test immediate no-tool hint responsiveness after the adapter is fixed, but that would
-still not answer whether SPADE training improved.
+Global usage is 318/450 before v3; 132 calls remain. The single global-319 sentinel is
+scientifically interpretable for the narrow adapter-conformance question only after independent
+review of the frozen implementation and intent; if separately authorized and spawned, it leaves
+131. This document and any v3 result do not authorize that call or any later paid call. An AGY-only
+inference rerun cannot establish learner improvement because it contains no parameter update,
+same-checkpoint treatment/control branches, or compute-matched learner lineages.
