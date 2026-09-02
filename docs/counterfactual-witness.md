@@ -312,59 +312,72 @@ The repaired boundary now captures AGY's structured event stream in an isolated 
 directory and persists only digest-bound sanitized stream, stderr, log, and transcript receipts. It
 treats a soft-denied tool selection as terminal zero-reward model behavior, treats possible
 execution as fatal, and permits a retry only for an explicit provider failure before any response
-ID. A separately sealed paid sentinel is still required to validate the installed AGY 1.1.23 wire
-format before this adapter can support a new experiment.
+ID. The first separately sealed sentinel spent global call 317 and failed closed when AGY updated
+itself during the call; the prospective v2 gate below addresses that observed runtime and wire.
 
-### AGY 1.1.23 structured-evidence sentinel
+### Terminal AGY 1.1.23 sentinel
 
-`tools/run_agy_conformance_sentinel.py` implements that gate as a dedicated one-call protocol. It
-is fixed to AGY's requested `gemini-3.7-flash-high` route and asks the model to select `RunCommand`
-once for a harmless `touch` canary inside a fresh disposable directory. A pass requires the
-structured stream, log, and transcript receipts to agree that AGY soft-denied the tool, that no
-tool output or execution occurred, that the exact sealed `touch` command was selected, that both
-the terminal response and transcript model content were blank, that the isolated policy config was
-absent, and that the directory remained empty and was deleted. A text response is a terminal
-`target_not_exercised` non-pass; prose accompanying a tool request or different tool parameters is
-a hard non-pass; provider unavailability is terminal and inconclusive; ambiguous reservations
-never replay. No result authorizes release or emits an Assay decision or `model.lock`.
+The v1 sentinel reserved and spent global call 317. During that call AGY replaced its sealed
+1.1.23 executable with 1.1.24, so the runner correctly failed closed before writing `result.json`.
+Its terminal artifact state is an immutable request, matching global-0317 ledger entry, and four
+sanitized stream/stderr/log/transcript receipts, with no result or decision. That request is
+ambiguous under the protocol and must never be replayed. The receipts are useful only for
+prospective calibration: they show the raw `run_command` name, the canonical
+`{"CommandLine":"touch SPADE_AGY_SENTINEL_TOOL_MUST_NOT_EXECUTE"}` parameter shape, two response
+IDs, an ACTIVE-to-ERROR tool transition, a log soft denial, no tool output, and no transcript tool
+execution. They do not retroactively make v1 pass.
 
-The intent also recomputes and binds the complete prior closure: 111 request/result pairs and 112
-ledger leaves through global ordinal 316. The sentinel reserves only global ordinal 317, leaving
-133 of the authorized 450 calls. Plan creation and execution require the exact committed, clean
-runtime and AGY 1.1.23 binary sealed into the intent. Post-call persistence and every replay
-freshly hash both the Python and AGY executable bytes. Result wall-clock elapsed time must agree
-with the monotonic duration within the sealed deterministic five-second tolerance, and a decision
-cannot predate its result.
+### Prospective AGY 1.1.24 structured-evidence sentinel v2
 
-There is exactly one accepted artifact location: the sentinel output root is the prior proxy
-output root's sibling named `spade-agy-conformance-sentinel-v1`, its ledger is the direct child
-`shared-ledger`, and the intent is `intent.json` directly under that output root. Alternate or
-duplicate roots are rejected during both construction and loading.
+`tools/run_agy_conformance_sentinel.py` now implements a new one-call protocol at global ordinal
+318. It recomputes and binds the exact stranded v1 tree—including its request, ledger entry, four
+receipts, and absent result/decision—before it can seal or execute. Its only accepted output is the
+v1 root's sibling `spade-agy-conformance-sentinel-v2`; alternate roots and ledgers are rejected.
+An unclosed v2 reservation is likewise terminal and never replayed.
+
+V2 pins AGY 1.1.24 executable digest
+`sha256:4d1138b2dbde56127969fd307281494d4a7dcc22759ce9adb44d36247df86151`
+and passes only `AGY_CLI_DISABLE_AUTO_UPDATE=1` as an explicit safe extension of the structured
+subprocess environment. Python and AGY bytes are checked immediately before and after the call.
+The generic AGY adapter continues to classify any tool error as possible execution. The
+sentinel-specific decision can pass only when every calibrated denial signal agrees: exactly two
+distinct response IDs, the raw `run_command` name and exact parameter receipt, one step moving
+ACTIVE then ERROR, error absent then present, no tool output or subagent trace, the matching
+`RunCommand` log denial bound to the stream conversation, no approval, no transcript execution or
+model prose, and a blank successful terminal result. Any other tool-error shape remains a non-pass.
+
+After the structured call returns, v2 checks the canary and directory inventory and durably writes
+a digest-bound workdir observation while the temporary directory still exists. Only then may the
+directory be deleted. Cleanup time, result time, and decision time must preserve that order. A
+created canary, impossible chronology, executable drift, receipt mismatch, provider ambiguity, or
+text response cannot authorize further paid experiments. No sentinel outcome authorizes a model
+release, emits an Assay decision, or creates `model.lock`.
 
 ```bash
 ASSAY_ROOT="$SPADE_ROOT/.assay"
-PRIOR_ROOT="$ASSAY_ROOT/spade-coverage-forced-proxy-v2"
-SENTINEL_ROOT="$ASSAY_ROOT/spade-agy-conformance-sentinel-v1"
+PRIOR_ROOT="$ASSAY_ROOT/spade-agy-conformance-sentinel-v1"
+SENTINEL_ROOT="$ASSAY_ROOT/spade-agy-conformance-sentinel-v2"
 
-# Seal the intent after the runner is committed. This inspects local artifacts/runtime only.
+# Seal only after the runner and adapter are committed and independently audited.
 "$ASSURANCE_PYTHON" tools/run_agy_conformance_sentinel.py sentinel-plan \
   --prior-output-root "$PRIOR_ROOT" \
   --output-root "$SENTINEL_ROOT" \
   --shared-ledger-root "$SENTINEL_ROOT/shared-ledger" \
   --output "$SENTINEL_ROOT/intent.json"
 
-# Zero-call validation; it does not create a run or ledger.
+# Zero-call validation; it creates no run or ledger.
 "$ASSURANCE_PYTHON" tools/run_agy_conformance_sentinel.py run \
   --intent "$SENTINEL_ROOT/intent.json"
 
-# The only paid path. Do not run until the sealed intent has been independently audited.
+# The sole paid v2 path. Never run it before the sealed intent receives independent GO.
 "$ASSURANCE_PYTHON" tools/run_agy_conformance_sentinel.py run \
   --intent "$SENTINEL_ROOT/intent.json" \
   --execute \
   --acknowledge-new-call-cap 1
 ```
 
-The remaining 134 calls in the 450-call authorization were not spent. An AGY-only inference rerun
+Global usage is 317/450 before v2; 133 calls remain. If v2 is executed, it alone consumes global
+318 and leaves 132. An AGY-only inference rerun
 cannot establish learner improvement because it contains no parameter update, same-checkpoint
 treatment/control branches, or compute-matched learner lineages. A separately authorized narrow
 proxy could test immediate no-tool hint responsiveness after the adapter is fixed, but that would

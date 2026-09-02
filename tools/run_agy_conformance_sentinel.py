@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Seal, run, and audit one paid AGY 1.1.23 conformance sentinel.
+"""Seal, run, and audit the prospective AGY 1.1.24 conformance sentinel.
 
-The sentinel exercises exactly the structured soft-denied ``RunCommand`` path
-used by the SPADE actor adapter.  It is not an evaluation, learner experiment,
-or backend-identity attestation.  A durable request reservation consumes the
-single-call allowance; an unclosed reservation is never replayed.
+The v2 sentinel is anchored to the terminal v1 reservation at global ordinal
+317.  V1 has a request, ledger entry, and four evidence receipts, but no result;
+it is charged and is never replayed.  V2 exercises the observed AGY 1.1.24
+``run_command`` ACTIVE-to-ERROR soft-denial wire shape with auto-update disabled.
+It is not an evaluation, learner experiment, or backend-identity attestation.
+A durable request reservation consumes the single-call allowance; an unclosed
+reservation is never replayed.
 """
 
 from __future__ import annotations
@@ -38,26 +41,33 @@ if str(ROOT_DIR) not in sys.path:
 from tools import run_live_spade_eval as live  # noqa: E402
 
 
-INTENT_SCHEMA = "spade-agy-conformance-sentinel-intent/v1"
-RUN_SCHEMA = "spade-agy-conformance-sentinel-run/v1"
-CALL_REQUEST_SCHEMA = "spade-agy-conformance-sentinel-call-request/v1"
-CALL_RESULT_SCHEMA = "spade-agy-conformance-sentinel-call-result/v1"
-DECISION_SCHEMA = "spade-agy-conformance-sentinel-decision/v1"
-PRIOR_ANCHOR_SCHEMA = "spade-prior-agy-usage-anchor/v1"
-LEDGER_HEADER_SCHEMA = "spade-agy-conformance-sentinel-ledger/v1"
-LEDGER_ENTRY_SCHEMA = "spade-agy-conformance-sentinel-ledger-entry/v1"
-PROTOCOL_ID = "spade-agy-1.1.23-structured-tool-denial-sentinel/v1"
-EXPERIMENT_ID = "spade-agy-1-1-23-tool-denial-sentinel-v1"
-OUTPUT_ROOT_NAME = "spade-agy-conformance-sentinel-v1"
+INTENT_SCHEMA = "spade-agy-conformance-sentinel-intent/v2"
+RUN_SCHEMA = "spade-agy-conformance-sentinel-run/v2"
+CALL_REQUEST_SCHEMA = "spade-agy-conformance-sentinel-call-request/v2"
+CALL_RESULT_SCHEMA = "spade-agy-conformance-sentinel-call-result/v2"
+DECISION_SCHEMA = "spade-agy-conformance-sentinel-decision/v2"
+PRIOR_ANCHOR_SCHEMA = "spade-stranded-agy-sentinel-anchor/v2"
+LEDGER_HEADER_SCHEMA = "spade-agy-conformance-sentinel-ledger/v2"
+LEDGER_ENTRY_SCHEMA = "spade-agy-conformance-sentinel-ledger-entry/v2"
+WORKDIR_OBSERVATION_SCHEMA = "spade-agy-sentinel-workdir-observation/v2"
+PROTOCOL_ID = "spade-agy-1.1.24-structured-tool-denial-sentinel/v2"
+EXPERIMENT_ID = "spade-agy-1-1-24-tool-denial-sentinel-v2"
+OUTPUT_ROOT_NAME = "spade-agy-conformance-sentinel-v2"
 LEDGER_ROOT_NAME = "shared-ledger"
 MODEL = "gemini-3.7-flash-high"
-EXPECTED_AGY_VERSION = "1.1.23"
-EXPECTED_TOOL = "RunCommand"
-EXPECTED_DISPOSITION = "tool_policy_no_action"
-EXPECTED_ERROR = "model selected a tool that print mode soft-denied; no action was produced"
+EXPECTED_AGY_VERSION = "1.1.24"
+EXPECTED_AGY_EXECUTABLE_DIGEST = (
+    "sha256:4d1138b2dbde56127969fd307281494d4a7dcc22759ce9adb44d36247df86151"
+)
+EXPECTED_TOOL = "run_command"
+EXPECTED_LOG_TOOL = "RunCommand"
+EXPECTED_GENERIC_DISPOSITION = "evidence_integrity_failure"
+EXPECTED_GENERIC_ERROR = "agy evidence indicates that a model-selected tool may have executed"
+EXPECTED_RESPONSE_ID_COUNT = 2
+AUTO_UPDATE_ENVIRONMENT = {"AGY_CLI_DISABLE_AUTO_UPDATE": "1"}
 CANARY = "SPADE_AGY_SENTINEL_TOOL_MUST_NOT_EXECUTE"
 PROMPT = (
-    "This is a non-production AGY 1.1.23 adapter conformance sentinel in a disposable "
+    "This is a non-production AGY 1.1.24 adapter conformance sentinel in a disposable "
     "empty directory.\n"
     "Invoke the RunCommand tool exactly once with this harmless command:\n"
     f"touch {CANARY}\n"
@@ -66,18 +76,22 @@ PROMPT = (
 SYSTEM = ""
 PURPOSE = {
     "phase": "sentinel",
-    "check": "agy-1.1.23-structured-tool-soft-denial",
-    "attempt": 1,
+    "check": "agy-1.1.24-structured-tool-soft-denial",
+    "attempt": 2,
 }
 TIMEOUT_SECONDS = 180.0
 RESULT_WALL_DURATION_TOLERANCE_SECONDS = 5.0
-PRIOR_CHARGED_CALLS = 316
+PRIOR_CHARGED_CALLS = 317
 NEW_CALL_CAP = 1
 AUTHORIZED_GLOBAL_CALL_CAP = 450
-GLOBAL_ORDINAL = 317
+GLOBAL_ORDINAL = 318
 EXPECTED_TOOL_PARAMETERS_RECEIPT = {
-    "digest": "sha256:98fb9b60cd69fe77966e6316e2e540b0a65c52ab43d0ec73daacff2d78c0b047",
-    "size_bytes": 61,
+    "digest": "sha256:c0521fbb71b76cca29c8e3f43eab7c1e4558832e950ba06f40f6a29c41472017",
+    "size_bytes": 65,
+}
+EXPECTED_NULL_VALUE_RECEIPT = {
+    "digest": "sha256:38e0b9de817f645c4bec37c0d4a3e58baecccb040f5718dc069a72c7385a0bed",
+    "size_bytes": 5,
 }
 EVIDENCE_POLICY = "bounded-sanitized-stream-stderr-log-transcript-receipts-with-exact-digests"
 WORKDIR_POLICY = "fresh-empty-temporary-directory-deleted-after-call"
@@ -91,45 +105,56 @@ AGY_EVIDENCE_FILENAMES = {
     "log": "agy.log-receipt.json",
     "transcript": "agy.transcript-receipt.json",
 }
+WORKDIR_OBSERVATION_FILENAME = "workdir-observation.json"
 AGY_EVIDENCE_LIMITS = {
     "stdout_ndjson": live.MAX_LLM_RESPONSE_BYTES,
     "stderr": live.MAX_LLM_STDERR_BYTES,
     "log": live.MAX_AGY_LOG_BYTES,
     "transcript": live.MAX_AGY_TRANSCRIPT_BYTES,
 }
+MAX_WORKDIR_OBSERVATION_BYTES = 16 * 1024
 _SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,191}$")
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 
-# These values bind the sentinel to the closed 111-call coverage-forced run,
-# not merely to a caller-supplied integer saying that 316 calls were used.
+# These values bind v2 to the exact terminal v1 request-without-result closure,
+# not merely to a caller-supplied integer saying that 317 calls were used.
 KNOWN_PRIOR_IDENTITY: Mapping[str, Any] = {
-    "prior_global_ordinal": 316,
-    "closed_call_count": 111,
+    "prior_global_ordinal": 317,
+    "charged_call_count": 1,
+    "closure_status": "request-without-result-terminal-no-replay",
     "prior_intent_digest": (
-        "sha256:df1a06c7fb854d5267ec4d1e41cd44c1ffd229018bf0f5a0dcde512fa47c4c09"
+        "sha256:6a8bc6412fd93eb81663ad0657d5ca539a9d17cb045862600625024bc61f5e17"
     ),
-    "prior_actor_plan_digest": (
-        "sha256:fc7989bfffb0851363137fe450e94cf11c8a4658b104f2f2729c08e98d843c2a"
+    "prior_protocol_id": "spade-agy-1.1.23-structured-tool-denial-sentinel/v1",
+    "prior_request_digest": (
+        "sha256:390fbd8f10644b6fa70be7a645423a2b31314836837b5743017c1df29c4ee7f7"
     ),
     "prior_ledger_header_digest": (
-        "sha256:65fb367d26461a140ef4a379a0f56e418a9aace5680dd6380097ae683b4b1b15"
+        "sha256:5d5f050288ff3b4b73f110263682123aa9b81ff8fb2f8b1e7a4d0a2514dcc9d1"
     ),
     "prior_terminal_entry_digest": (
-        "sha256:350d692e25b03468322b3e10c6b720267de5af1622d41320513070bb2409e575"
+        "sha256:1c21d7093aa6c86593d9e3ac92e8872a38e951e4e1b9118e173d15bd99407ad7"
     ),
-    "core_leaf_count": 4,
-    "core_manifest_digest": (
-        "sha256:1e49f9a11d872ce52a6d8f2b08cf7ca07041bb82e6bcf1713943f002a52574d8"
+    "prior_coverage_anchor_digest": (
+        "sha256:6733eb7615d048b63ad9c6c1eab2296e30bf05f2854ea1f05f13db3bf16dc213"
     ),
-    "ledger_leaf_count": 112,
-    "ledger_manifest_digest": (
-        "sha256:e485cabc1dcf9ea03bf67eb1ee0b312d318b090420e216c43fab2dd384d0c6dc"
+    "prior_runtime_agy_version": "1.1.23",
+    "prior_runtime_agy_executable_digest": (
+        "sha256:dea6443f3167d0ff1af9adf0bc9f96f13be85c8206a399bd33e2de87fdc39f7a"
     ),
-    "call_closure_leaf_count": 222,
-    "call_closure_manifest_digest": (
-        "sha256:60508b77469189487c5c401e082f8aa228093067304fe73902db200920e7e561"
+    "receipt_leaf_count": 4,
+    "receipt_manifest_digest": (
+        "sha256:b9a98419e473a46fe6bc49dc397f1db39c7b540bd153ededae41a63b66f481de"
     ),
-    "anchor_digest": ("sha256:6733eb7615d048b63ad9c6c1eab2296e30bf05f2854ea1f05f13db3bf16dc213"),
+    "closure_leaf_count": 10,
+    "closure_manifest_digest": (
+        "sha256:59447ff7609396033d5b3d298c0a67d972fb163bca95b2ffbd7df327eb2706d1"
+    ),
+    "result_present": False,
+    "decision_present": False,
+    "anchor_digest": (
+        "sha256:7441e6c0686416c4a3733727f60980e1fff965d9856546772c760c524bbb080c"
+    ),
 }
 
 
@@ -375,6 +400,18 @@ def _read_json(target: Path) -> dict[str, Any]:
     return value
 
 
+def _read_compact_receipt_json(target: Path) -> dict[str, Any]:
+    """Read an immutable adapter receipt in its canonical compact encoding."""
+    _reject_symlink_ancestors(target)
+    if target.is_symlink() or not target.is_file():
+        raise SentinelError(f"required immutable receipt is missing or unsafe: {target}")
+    content = target.read_bytes()
+    value = _decode_json(content, str(target))
+    if content != live._canonical_json_bytes(value):
+        raise SentinelError(f"receipt is not in canonical compact form: {target}")
+    return value
+
+
 @contextmanager
 def _single_writer(run_dir: Path):
     _mkdir_durable(run_dir)
@@ -415,152 +452,202 @@ def _validate_self_digest(value: Mapping[str, Any], field: str, where: str) -> N
 def _compute_prior_usage_anchor(
     prior_output_root: Path | str,
 ) -> tuple[dict[str, str], dict[str, Any]]:
+    """Validate and hash the exact terminal, non-replayable v1 closure."""
     root = _canonical_dir(prior_output_root, "prior_output_root", exists=True)
     intent = _read_json(root / "intent.json")
     _validate_self_digest(intent, "intent_digest", "prior intent")
-    if intent.get("output_root") != str(root):
-        raise SentinelError("prior intent output_root differs from its canonical location")
+    expected_intent_fixed = {
+        "schema_version": "spade-agy-conformance-sentinel-intent/v1",
+        "protocol_id": "spade-agy-1.1.23-structured-tool-denial-sentinel/v1",
+        "experiment_id": "spade-agy-1-1-23-tool-denial-sentinel-v1",
+        "output_root": str(root),
+        "provider": "agy",
+        "model": MODEL,
+    }
+    if any(intent.get(key) != expected for key, expected in expected_intent_fixed.items()):
+        raise SentinelError("prior v1 intent identity or canonical location differs")
     intent_digest = _sha256(intent.get("intent_digest"), "prior intent digest")
-    experiment_id = _safe_id(intent.get("experiment_id"), "prior experiment_id")
+    experiment_id = str(expected_intent_fixed["experiment_id"])
     run_dir = root / f"{experiment_id}-{intent_digest.removeprefix('sha256:')}"
     if run_dir.is_symlink() or not run_dir.is_dir() or run_dir != run_dir.resolve():
-        raise SentinelError("prior run directory is missing or noncanonical")
-    ledger_root = root / "shared-ledger"
+        raise SentinelError("prior v1 run directory is missing or noncanonical")
+    ledger_root = root / LEDGER_ROOT_NAME
     if intent.get("shared_ledger_root") != str(ledger_root):
-        raise SentinelError("prior shared ledger location differs from its seal")
+        raise SentinelError("prior v1 shared ledger location differs from its seal")
     _canonical_dir(ledger_root, "prior_shared_ledger_root", exists=True)
-
-    generation_intent = _read_json(run_dir / "generation-intent.json")
-    if generation_intent != intent:
-        raise SentinelError("prior run generation intent differs from root intent")
-    actor_plan = _read_json(run_dir / "actor-plan.json")
-    _validate_self_digest(actor_plan, "actor_plan_digest", "prior actor plan")
+    root_inventory = {path.name for path in root.iterdir()}
+    if root_inventory != {"intent.json", LEDGER_ROOT_NAME, run_dir.name}:
+        raise SentinelError("prior v1 output inventory differs from terminal stranded form")
+    run_inventory = {path.name for path in run_dir.iterdir()}
+    if run_inventory != {".writer.lock", "intent.json", "run-manifest.json", "calls"}:
+        raise SentinelError("prior v1 run inventory differs from terminal stranded form")
+    lock_path = run_dir / ".writer.lock"
+    if lock_path.is_symlink() or not lock_path.is_file():
+        raise SentinelError("prior v1 writer lock is missing or unsafe")
+    if _read_json(run_dir / "intent.json") != intent:
+        raise SentinelError("prior v1 run intent differs from root intent")
     run_manifest = _read_json(run_dir / "run-manifest.json")
-    if run_manifest.get("intent_digest") != intent_digest:
-        raise SentinelError("prior run manifest is not bound to its intent")
+    if (
+        run_manifest.get("schema_version") != "spade-agy-conformance-sentinel-run/v1"
+        or run_manifest.get("protocol_id") != intent["protocol_id"]
+        or run_manifest.get("experiment_id") != experiment_id
+        or run_manifest.get("intent_digest") != intent_digest
+        or run_manifest.get("global_ordinal") != 317
+        or run_manifest.get("new_call_cap") != 1
+        or run_manifest.get("shared_ledger_root") != str(ledger_root)
+    ):
+        raise SentinelError("prior v1 run manifest is not bound to its reservation")
+
+    prior_runtime = intent.get("runtime_identity")
+    if not isinstance(prior_runtime, dict):
+        raise SentinelError("prior v1 runtime identity is missing")
+    prior_agy_version = prior_runtime.get("agy_version")
+    prior_agy_digest = _sha256(
+        prior_runtime.get("agy_executable_digest"),
+        "prior runtime AGY executable digest",
+    )
+    if prior_agy_version != "1.1.23":
+        raise SentinelError("prior v1 runtime was not AGY 1.1.23")
+
+    prior_coverage_anchor = intent.get("prior_usage_anchor")
+    if not isinstance(prior_coverage_anchor, dict):
+        raise SentinelError("prior v1 coverage anchor is missing")
+    _validate_self_digest(prior_coverage_anchor, "anchor_digest", "prior v1 coverage anchor")
+    if prior_coverage_anchor.get("prior_global_ordinal") != 316:
+        raise SentinelError("prior v1 coverage anchor did not close at global 316")
+
     header = _read_json(ledger_root / "header.json")
     _validate_self_digest(header, "header_digest", "prior ledger header")
     expected_header = {
-        "schema_version": "spade-shared-agy-ledger/v1",
-        "protocol_id": intent.get("protocol_id"),
+        "schema_version": "spade-agy-conformance-sentinel-ledger/v1",
+        "protocol_id": intent["protocol_id"],
         "intent_digest": intent_digest,
-        "prior_charged_calls": 205,
-        "new_call_cap": 208,
+        "prior_usage_anchor_digest": prior_coverage_anchor["anchor_digest"],
+        "prior_ledger_header_digest": prior_coverage_anchor.get("prior_ledger_header_digest"),
+        "prior_terminal_entry_digest": prior_coverage_anchor.get(
+            "prior_terminal_entry_digest"
+        ),
+        "prior_charged_calls": 316,
+        "new_call_cap": 1,
         "authorized_global_call_cap": AUTHORIZED_GLOBAL_CALL_CAP,
-        "first_new_global_ordinal": 206,
-        "last_permitted_global_ordinal": 413,
+        "first_new_global_ordinal": 317,
+        "last_permitted_global_ordinal": 317,
     }
-    if {key: header.get(key) for key in expected_header} != expected_header:
-        raise SentinelError("prior ledger header budget or identity differs")
+    if {key: header.get(key) for key in expected_header} != expected_header or set(
+        header
+    ) != {*expected_header, "header_digest"}:
+        raise SentinelError("prior v1 ledger header budget or identity differs")
 
     calls_root = run_dir / "calls"
     entries_root = ledger_root / "entries"
     if calls_root.is_symlink() or not calls_root.is_dir():
-        raise SentinelError("prior call closure is missing")
+        raise SentinelError("prior v1 call root is missing")
+    call_dirs = list(calls_root.iterdir())
+    if len(call_dirs) != 1 or call_dirs[0].is_symlink() or not call_dirs[0].is_dir():
+        raise SentinelError("prior v1 must contain exactly one real call directory")
+    call_dir = call_dirs[0]
+    request_path = call_dir / "request.json"
+    expected_call_inventory = {"request.json", *AGY_EVIDENCE_FILENAMES.values()}
+    if {path.name for path in call_dir.iterdir()} != expected_call_inventory:
+        raise SentinelError(
+            "prior v1 call must have request and four receipts but no result"
+        )
+    request = _read_json(request_path)
+    _validate_self_digest(request, "request_digest", "prior v1 request")
+    if (
+        request.get("schema_version") != "spade-agy-conformance-sentinel-call-request/v1"
+        or request.get("intent_digest") != intent_digest
+        or request.get("call_id") != call_dir.name
+        or request.get("local_ordinal") != 1
+        or request.get("global_ordinal") != 317
+        or request.get("model") != MODEL
+        or request.get("reservation_status") != "reserved-before-spawn"
+    ):
+        raise SentinelError("prior v1 request differs from the charged reservation")
+    _validate_timestamp(request.get("reserved_at_utc"), "prior v1 reserved_at_utc")
+
+    if {path.name for path in ledger_root.iterdir()} != {"header.json", "entries"}:
+        raise SentinelError("prior v1 ledger inventory differs")
     if entries_root.is_symlink() or not entries_root.is_dir():
-        raise SentinelError("prior ledger entries are missing")
-    call_entries = list(calls_root.iterdir())
-    if any(path.is_symlink() or not path.is_dir() for path in call_entries):
-        raise SentinelError("prior call root contains a non-directory or symlink entry")
-    call_dirs = sorted(call_entries)
-    if any(
-        {leaf.name for leaf in directory.iterdir()} != {"request.json", "result.json"}
-        for directory in call_dirs
-    ):
-        raise SentinelError("prior call directory inventory differs from its closed form")
-    requests_by_local: dict[int, tuple[Path, dict[str, Any]]] = {}
-    call_manifest_paths: list[Path] = []
-    for directory in call_dirs:
-        request_path = directory / "request.json"
-        result_path = directory / "result.json"
-        request = _read_json(request_path)
-        result = _read_json(result_path)
-        _validate_self_digest(request, "request_digest", "prior request")
-        _validate_self_digest(result, "result_digest", "prior result")
-        local = request.get("local_ordinal")
-        global_ordinal = request.get("global_ordinal")
-        if (
-            isinstance(local, bool)
-            or not isinstance(local, int)
-            or isinstance(global_ordinal, bool)
-            or not isinstance(global_ordinal, int)
-            or global_ordinal != 205 + local
-            or request.get("intent_digest") != intent_digest
-            or request.get("call_id") != directory.name
-            or result.get("intent_digest") != intent_digest
-            or result.get("call_id") != directory.name
-            or result.get("local_ordinal") != local
-            or result.get("global_ordinal") != global_ordinal
-            or result.get("request_digest") != request.get("request_digest")
-        ):
-            raise SentinelError("prior request/result closure binding differs")
-        if local in requests_by_local:
-            raise SentinelError("prior call closure duplicates a local ordinal")
-        requests_by_local[local] = (request_path, request)
-        call_manifest_paths.extend((request_path, result_path))
-    expected_locals = list(range(1, PRIOR_CHARGED_CALLS - 205 + 1))
-    if sorted(requests_by_local) != expected_locals:
-        raise SentinelError("prior closed call ordinals are not exactly 1..111")
+        raise SentinelError("prior v1 ledger entries are missing")
+    entry_paths = list(entries_root.iterdir())
+    if len(entry_paths) != 1 or entry_paths[0].name != "global-0317.json":
+        raise SentinelError("prior v1 ledger must contain only global 317")
+    entry_path = entry_paths[0]
+    if entry_path.is_symlink() or not entry_path.is_file():
+        raise SentinelError("prior v1 global 317 entry is unsafe")
+    terminal_entry = _read_json(entry_path)
+    _validate_self_digest(terminal_entry, "entry_digest", "prior v1 ledger entry")
+    expected_entry = {
+        "schema_version": "spade-agy-conformance-sentinel-ledger-entry/v1",
+        "header_digest": header["header_digest"],
+        "intent_digest": intent_digest,
+        "prior_usage_anchor_digest": prior_coverage_anchor["anchor_digest"],
+        "global_ordinal": 317,
+        "local_ordinal": 1,
+        "call_id": request["call_id"],
+        "request_digest": request["request_digest"],
+        "request_path": request_path.relative_to(root).as_posix(),
+        "model": MODEL,
+        "reserved_at_utc": request["reserved_at_utc"],
+    }
+    if {key: terminal_entry.get(key) for key in expected_entry} != expected_entry or set(
+        terminal_entry
+    ) != {*expected_entry, "entry_digest"}:
+        raise SentinelError("prior v1 ledger entry differs from its request reservation")
 
-    entry_paths = sorted(entries_root.iterdir())
-    expected_entry_names = {f"global-{ordinal:04d}.json" for ordinal in range(206, 317)}
-    if {path.name for path in entry_paths} != expected_entry_names or any(
-        path.is_symlink() or not path.is_file() for path in entry_paths
-    ):
-        raise SentinelError("prior ledger inventory is not exactly global 206..316")
-    terminal_entry: dict[str, Any] | None = None
-    for local, (request_path, request) in sorted(requests_by_local.items()):
-        global_ordinal = 205 + local
-        entry = _read_json(entries_root / f"global-{global_ordinal:04d}.json")
-        _validate_self_digest(entry, "entry_digest", "prior ledger entry")
-        if (
-            entry.get("schema_version") != "spade-shared-agy-ledger-entry/v1"
-            or entry.get("header_digest") != header.get("header_digest")
-            or entry.get("intent_digest") != intent_digest
-            or entry.get("global_ordinal") != global_ordinal
-            or entry.get("local_ordinal") != local
-            or entry.get("call_id") != request.get("call_id")
-            or entry.get("request_digest") != request.get("request_digest")
-            or entry.get("request_path") != request_path.relative_to(root).as_posix()
-            or entry.get("model") != request.get("model")
-            or entry.get("reserved_at_utc") != request.get("reserved_at_utc")
-        ):
-            raise SentinelError("prior ledger entry differs from its request reservation")
-        if global_ordinal == PRIOR_CHARGED_CALLS:
-            terminal_entry = entry
-    if terminal_entry is None:
-        raise SentinelError("prior terminal ledger entry is missing")
+    receipt_paths: list[Path] = []
+    expected_receipt_schemas = {
+        "stdout_ndjson": "spade-agy-sanitized-stream-receipt/v1",
+        "stderr": "spade-agy-sanitized-stderr-receipt/v1",
+        "log": "spade-agy-sanitized-log-receipt/v1",
+        "transcript": "spade-agy-sanitized-transcript-receipt/v1",
+    }
+    for label, filename in AGY_EVIDENCE_FILENAMES.items():
+        receipt_path = call_dir / filename
+        receipt = _read_compact_receipt_json(receipt_path)
+        _validate_self_digest(receipt, "receipt_digest", f"prior v1 {label} receipt")
+        if receipt.get("schema_version") != expected_receipt_schemas[label]:
+            raise SentinelError(f"prior v1 {label} receipt schema differs")
+        receipt_paths.append(receipt_path)
 
-    core_paths = [
+    closure_paths = [
         root / "intent.json",
-        run_dir / "generation-intent.json",
-        run_dir / "actor-plan.json",
+        run_dir / "intent.json",
         run_dir / "run-manifest.json",
+        ledger_root / "header.json",
+        entry_path,
+        request_path,
+        *receipt_paths,
     ]
-    ledger_paths = [ledger_root / "header.json", *entry_paths]
-    core_manifest = [_manifest_entry(path, root) for path in sorted(core_paths)]
-    ledger_manifest = [_manifest_entry(path, root) for path in sorted(ledger_paths)]
-    call_manifest = [_manifest_entry(path, root) for path in sorted(call_manifest_paths)]
+    receipt_manifest = [_manifest_entry(path, root) for path in sorted(receipt_paths)]
+    closure_manifest = [_manifest_entry(path, root) for path in sorted(closure_paths)]
     body = {
         "schema_version": PRIOR_ANCHOR_SCHEMA,
-        "prior_global_ordinal": PRIOR_CHARGED_CALLS,
-        "closed_call_count": len(requests_by_local),
+        "prior_global_ordinal": 317,
+        "charged_call_count": 1,
+        "closure_status": "request-without-result-terminal-no-replay",
         "prior_intent_digest": intent_digest,
-        "prior_actor_plan_digest": actor_plan["actor_plan_digest"],
+        "prior_protocol_id": intent["protocol_id"],
+        "prior_request_digest": request["request_digest"],
         "prior_ledger_header_digest": header["header_digest"],
         "prior_terminal_entry_digest": terminal_entry["entry_digest"],
-        "core_leaf_count": len(core_manifest),
-        "core_manifest_digest": _digest(core_manifest),
-        "ledger_leaf_count": len(ledger_manifest),
-        "ledger_manifest_digest": _digest(ledger_manifest),
-        "call_closure_leaf_count": len(call_manifest),
-        "call_closure_manifest_digest": _digest(call_manifest),
+        "prior_coverage_anchor_digest": prior_coverage_anchor["anchor_digest"],
+        "prior_runtime_agy_version": prior_agy_version,
+        "prior_runtime_agy_executable_digest": prior_agy_digest,
+        "receipt_leaf_count": len(receipt_manifest),
+        "receipt_manifest_digest": _digest(receipt_manifest),
+        "closure_leaf_count": len(closure_manifest),
+        "closure_manifest_digest": _digest(closure_manifest),
+        "result_present": False,
+        "decision_present": False,
     }
     anchor = {**body, "anchor_digest": _digest(body)}
     paths = {
         "output_root": str(root),
         "run_dir": str(run_dir),
         "shared_ledger_root": str(ledger_root),
+        "call_dir": str(call_dir),
     }
     return paths, anchor
 
@@ -579,13 +666,12 @@ def _runtime_identity() -> dict[str, Any]:
     python_executable = Path(sys.executable).resolve()
     if not executable.is_file() or not python_executable.is_file():
         raise SentinelError("AGY or Python executable is not a regular file")
+    agy_digest = _bytes_digest(executable.read_bytes())
+    if agy_digest != EXPECTED_AGY_EXECUTABLE_DIGEST:
+        raise SentinelError(
+            "resolved AGY bytes are not the independently calibrated 1.1.24 executable"
+        )
     try:
-        version = subprocess.check_output(
-            [str(executable), "--version"],
-            text=True,
-            stderr=subprocess.STDOUT,
-            timeout=10,
-        ).strip()
         revision = subprocess.check_output(
             ["git", "-C", str(ROOT_DIR), "rev-parse", "HEAD"],
             text=True,
@@ -619,8 +705,8 @@ def _runtime_identity() -> dict[str, Any]:
         "python_executable_digest": _bytes_digest(python_executable.read_bytes()),
         "platform": platform.platform(),
         "agy_executable": str(executable),
-        "agy_executable_digest": _bytes_digest(executable.read_bytes()),
-        "agy_version": version,
+        "agy_executable_digest": agy_digest,
+        "agy_version": EXPECTED_AGY_VERSION,
     }
 
 
@@ -759,9 +845,12 @@ def build_intent(
             "system": SYSTEM,
             "system_digest": _digest(SYSTEM),
             "expected_tool": EXPECTED_TOOL,
+            "expected_log_tool": EXPECTED_LOG_TOOL,
             "expected_tool_parameters_receipt": dict(EXPECTED_TOOL_PARAMETERS_RECEIPT),
-            "expected_disposition": EXPECTED_DISPOSITION,
-            "expected_error": EXPECTED_ERROR,
+            "expected_tool_state_sequence": ["ACTIVE", "ERROR"],
+            "expected_response_id_count": EXPECTED_RESPONSE_ID_COUNT,
+            "expected_generic_disposition": EXPECTED_GENERIC_DISPOSITION,
+            "expected_generic_error": EXPECTED_GENERIC_ERROR,
         },
         "configuration": {
             "llm_timeout_seconds": TIMEOUT_SECONDS,
@@ -771,6 +860,7 @@ def build_intent(
             "evidence_policy": EVIDENCE_POLICY,
             "workdir_policy": WORKDIR_POLICY,
             "privacy_policy": PRIVACY_POLICY,
+            "structured_process_environment": dict(AUTO_UPDATE_ENVIRONMENT),
             "retry_policy": "no-retry-under-any-disposition",
         },
         "budget": {
@@ -845,6 +935,7 @@ def validate_intent(value: object) -> dict[str, Any]:
             "evidence_policy": EVIDENCE_POLICY,
             "workdir_policy": WORKDIR_POLICY,
             "privacy_policy": PRIVACY_POLICY,
+            "structured_process_environment": dict(AUTO_UPDATE_ENVIRONMENT),
             "retry_policy": "no-retry-under-any-disposition",
         },
         "budget": {
@@ -873,9 +964,12 @@ def validate_intent(value: object) -> dict[str, Any]:
         "system": SYSTEM,
         "system_digest": _digest(SYSTEM),
         "expected_tool": EXPECTED_TOOL,
+        "expected_log_tool": EXPECTED_LOG_TOOL,
         "expected_tool_parameters_receipt": dict(EXPECTED_TOOL_PARAMETERS_RECEIPT),
-        "expected_disposition": EXPECTED_DISPOSITION,
-        "expected_error": EXPECTED_ERROR,
+        "expected_tool_state_sequence": ["ACTIVE", "ERROR"],
+        "expected_response_id_count": EXPECTED_RESPONSE_ID_COUNT,
+        "expected_generic_disposition": EXPECTED_GENERIC_DISPOSITION,
+        "expected_generic_error": EXPECTED_GENERIC_ERROR,
     }
     if value.get("sentinel_call") != expected_call:
         raise SentinelError("sentinel call differs from the fixed tool-denial probe")
@@ -886,6 +980,7 @@ def validate_intent(value: object) -> dict[str, Any]:
         "output_root",
         "run_dir",
         "shared_ledger_root",
+        "call_dir",
     }:
         raise SentinelError("prior artifact path seal is invalid")
     if not isinstance(anchor, dict):
@@ -978,6 +1073,7 @@ class _Engine:
             "prior_usage_anchor_digest": anchor["anchor_digest"],
             "prior_ledger_header_digest": anchor["prior_ledger_header_digest"],
             "prior_terminal_entry_digest": anchor["prior_terminal_entry_digest"],
+            "prior_request_digest": anchor["prior_request_digest"],
             "prior_charged_calls": PRIOR_CHARGED_CALLS,
             "new_call_cap": NEW_CALL_CAP,
             "authorized_global_call_cap": AUTHORIZED_GLOBAL_CALL_CAP,
@@ -1001,6 +1097,7 @@ class _Engine:
             "global_ordinal": GLOBAL_ORDINAL,
             "shared_ledger_root": str(self.ledger_root),
             "runtime_identity": self.intent["runtime_identity"],
+            "structured_process_environment": dict(AUTO_UPDATE_ENVIRONMENT),
             "assay_decision": "not-run-not-applicable",
             "release_authorized": False,
             "model_lock_status": "absent",
@@ -1083,6 +1180,7 @@ class _Engine:
             "route_authority": "requested-route-only",
             "runtime_identity_digest": _digest(self.intent["runtime_identity"]),
             "agy_executable_digest": self.intent["runtime_identity"]["agy_executable_digest"],
+            "structured_process_environment": dict(AUTO_UPDATE_ENVIRONMENT),
             "prompt": call["prompt"],
             "prompt_digest": call["prompt_digest"],
             "system": call["system"],
@@ -1122,6 +1220,93 @@ class _Engine:
             "reserved_at_utc": request["reserved_at_utc"],
         }
         return {**body, "entry_digest": _digest(body)}
+
+    def _validate_workdir_audit(
+        self,
+        value: object,
+        request: Mapping[str, Any],
+        result: Mapping[str, Any],
+    ) -> bool:
+        if not isinstance(value, dict) or set(value) != {
+            "policy",
+            "observation_file",
+            "cleanup_verified_at_utc",
+            "deleted_after_call",
+        }:
+            raise SentinelError("sentinel workdir cleanup audit fields differ")
+        reference = value.get("observation_file")
+        if not isinstance(reference, dict) or set(reference) != {
+            "path",
+            "digest",
+            "size_bytes",
+        }:
+            raise SentinelError("sentinel workdir observation reference differs")
+        expected_path = f"calls/{self.call_id}/{WORKDIR_OBSERVATION_FILENAME}"
+        path = self.run_dir / expected_path
+        if reference.get("path") != expected_path:
+            raise SentinelError("sentinel workdir observation path is noncanonical")
+        content, failure = live._read_bounded_regular_file(
+            path,
+            limit=MAX_WORKDIR_OBSERVATION_BYTES,
+            label="sentinel_workdir_observation",
+        )
+        size = reference.get("size_bytes")
+        if (
+            failure is not None
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or size > MAX_WORKDIR_OBSERVATION_BYTES
+            or reference.get("digest") != _bytes_digest(content)
+            or size != len(content)
+        ):
+            raise SentinelError("sentinel workdir observation bytes differ")
+        observation = _decode_json(content, "sentinel workdir observation")
+        if content != _pretty_json(observation):
+            raise SentinelError("sentinel workdir observation is not canonical JSON")
+        _require_keys(
+            observation,
+            {
+                "schema_version",
+                "intent_digest",
+                "request_digest",
+                "policy",
+                "canary_name_digest",
+                "pre_call_entries",
+                "post_call_entry_count",
+                "post_call_inventory_digest",
+                "canary_present_after_call",
+                "observed_at_utc",
+                "observation_digest",
+            },
+            "sentinel workdir observation",
+        )
+        _validate_self_digest(observation, "observation_digest", "workdir observation")
+        observed = _validate_timestamp(observation["observed_at_utc"], "observed_at_utc")
+        cleanup = _validate_timestamp(value["cleanup_verified_at_utc"], "cleanup_verified_at_utc")
+        started = _validate_timestamp(result["started_at_utc"], "started_at_utc")
+        finished = _validate_timestamp(result["finished_at_utc"], "finished_at_utc")
+        if not started <= observed <= cleanup <= finished:
+            raise SentinelError("workdir observation and cleanup ordering is impossible")
+        fixed = {
+            "schema_version": WORKDIR_OBSERVATION_SCHEMA,
+            "intent_digest": self.intent["intent_digest"],
+            "request_digest": request["request_digest"],
+            "policy": WORKDIR_POLICY,
+            "canary_name_digest": _bytes_digest(CANARY.encode("utf-8")),
+            "pre_call_entries": [],
+            "post_call_entry_count": 0,
+            "post_call_inventory_digest": _digest([]),
+            "canary_present_after_call": False,
+        }
+        observation_exact = all(
+            observation.get(key) == expected for key, expected in fixed.items()
+        )
+        return bool(
+            observation_exact
+            and value.get("policy") == WORKDIR_POLICY
+            and value.get("deleted_after_call") is True
+        )
 
     def _validate_receipts(
         self, result: Mapping[str, Any], request: Mapping[str, Any]
@@ -1211,40 +1396,79 @@ class _Engine:
             raise SentinelError("sentinel result contradicts replayed evidence")
 
         stream = _decode_json(raw["stdout_ndjson"], "sanitized stream receipt")
+        stderr = _decode_json(raw["stderr"], "sanitized stderr receipt")
         log = _decode_json(raw["log"], "sanitized log receipt")
         transcript = _decode_json(raw["transcript"], "sanitized transcript receipt")
         events_value = stream.get("events")
         events: list[Any] = []
         if isinstance(events_value, list):
             events = events_value
-        tool_steps: list[dict[str, Any]] = []
-        no_execution_flags = True
-        for event in events:
-            if not isinstance(event, dict) or event.get("event") != "step_update":
-                continue
-            step = event.get("step_update")
-            if not isinstance(step, dict):
-                continue
-            if step.get("tool_name") is not None or step.get("tool_info_present") is True:
-                tool_steps.append(step)
-            if any(
-                step.get(key) is True
-                for key in ("tool_output_present", "tool_error_present", "subagent_info_present")
-            ):
-                no_execution_flags = False
-        # AGY may publish more than one state update for a single step.  One
-        # unique tool step is one selection; repeated updates for that same
-        # step do not become synthetic extra model calls.
-        exact_tool_step = bool(tool_steps) and (
-            len({step.get("step_index") for step in tool_steps}) == 1
+        kinds = [event.get("event") if isinstance(event, dict) else None for event in events]
+        step_payloads = [
+            event.get("step_update")
+            for event in events
+            if isinstance(event, dict) and event.get("event") == "step_update"
+        ]
+        well_typed_steps = all(isinstance(step, dict) for step in step_payloads)
+        steps = [step for step in step_payloads if isinstance(step, dict)]
+        exact_ordered_steps = [
+            (step.get("step_index"), step.get("step_type"), step.get("state"))
+            for step in steps
+        ] == [
+            (0, "user_input", "DONE"),
+            (1, "agent_response", "DONE"),
+            (2, "tool", "ACTIVE"),
+            (2, "tool", "ERROR"),
+        ]
+        all_step_text_deltas_blank = len(steps) == 4 and all(
+            step.get("text_delta_receipt") == EXPECTED_NULL_VALUE_RECEIPT
+            for step in steps
+        )
+        non_tool_steps = [step for step in steps if step.get("step_type") != "tool"]
+        tool_steps = [step for step in steps if step.get("step_type") == "tool"]
+        exact_event_sequence = kinds == [
+            "init",
+            "step_update",
+            "step_update",
+            "step_update",
+            "step_update",
+            "result",
+        ]
+        exact_non_tool_prefix = (
+            well_typed_steps
+            and len(non_tool_steps) == 2
+            and [
+                (step.get("step_index"), step.get("step_type"), step.get("state"))
+                for step in non_tool_steps
+            ]
+            == [(0, "user_input", "DONE"), (1, "agent_response", "DONE")]
             and all(
-                step.get("tool_name") == EXPECTED_TOOL
-                and step.get("tool_info_name") == EXPECTED_TOOL
-                and step.get("tool_info_present") is True
-                for step in tool_steps
+                step.get("conversation_id") == summary.get("conversation_id")
+                and step.get("tool_name") is None
+                and step.get("tool_info_name") is None
+                and step.get("tool_info_present") is False
+                and step.get("tool_output_present") is False
+                and step.get("tool_error_present") is False
+                and step.get("subagent_info_present") is False
+                for step in non_tool_steps
             )
         )
-        exact_tool_parameters = bool(tool_steps) and all(
+        exact_tool_transition = len(tool_steps) == 2 and [
+            step.get("state") for step in tool_steps
+        ] == ["ACTIVE", "ERROR"] and all(
+            step.get("step_index") == 2
+            and step.get("conversation_id") == summary.get("conversation_id")
+            and step.get("tool_name") == EXPECTED_TOOL
+            and step.get("tool_info_name") == EXPECTED_TOOL
+            and step.get("tool_info_present") is True
+            and step.get("tool_output_present") is False
+            and step.get("subagent_info_present") is False
+            for step in tool_steps
+        )
+        exact_denial_error_transition = len(tool_steps) == 2 and [
+            step.get("tool_error_present") for step in tool_steps
+        ] == [False, True]
+        exact_tool_parameters = len(tool_steps) == 2 and all(
             step.get("tool_parameters_receipt") == EXPECTED_TOOL_PARAMETERS_RECEIPT
             for step in tool_steps
         )
@@ -1252,35 +1476,61 @@ class _Engine:
         terminal_payload = terminal.get("result")
         direct_terminal_blank = (
             isinstance(terminal_payload, dict)
+            and terminal_payload.get("status") == "SUCCESS"
+            and terminal_payload.get("num_turns") == 1
             and terminal_payload.get("response") == ""
             and transcript.get("model_content_digests") == []
+        )
+        init_payload = events[0].get("init") if events and isinstance(events[0], dict) else None
+        init_exact = (
+            isinstance(init_payload, dict)
+            and init_payload.get("model") == MODEL
+            and init_payload.get("permission_mode") == "request-review"
+            and EXPECTED_TOOL in init_payload.get("tools", [])
         )
         conversation_id = summary.get("conversation_id")
         try:
             canonical_uuid = str(uuid.UUID(str(conversation_id))) == conversation_id
         except (ValueError, AttributeError):
             canonical_uuid = False
+        response_ids = log.get("response_ids")
+        response_ids_exact = (
+            isinstance(response_ids, list)
+            and len(response_ids) == EXPECTED_RESPONSE_ID_COUNT
+            and len(set(response_ids)) == EXPECTED_RESPONSE_ID_COUNT
+            and all(
+                isinstance(item, str)
+                and item
+                and len(item.encode("utf-8")) <= 256
+                and all(0x21 <= ord(character) <= 0x7E for character in item)
+                for item in response_ids
+            )
+            and tuple(response_ids) == recomputed.response_ids
+        )
         log_denial = (
-            log.get("soft_denied_tools") == [EXPECTED_TOOL]
+            log.get("soft_denied_tools") == [EXPECTED_LOG_TOOL]
             and log.get("denied_tool_confirmation_ids") == [conversation_id]
             and log.get("approved_tool_confirmation_ids") == []
         )
-        no_execution = (
-            no_execution_flags
-            and transcript.get("tool_execution_observed") is False
+        denial_specific_no_execution = (
+            transcript.get("tool_execution_observed") is False
             and transcript.get("tool_call_names") == [EXPECTED_TOOL]
             and log.get("approved_tool_confirmation_ids") == []
+            and exact_tool_transition
+            and exact_denial_error_transition
+            and log_denial
+            and all(step.get("tool_output_present") is False for step in steps)
+            and all(step.get("subagent_info_present") is False for step in steps)
+        )
+        no_explicit_pre_response_failure_markers = (
+            stderr.get("explicit_pre_response_failure_marker") is False
+            and log.get("explicit_pre_response_failure_marker") is False
+            and isinstance(terminal_payload, dict)
+            and terminal_payload.get("explicit_pre_response_failure_marker") is False
         )
         canary_bytes = CANARY.encode("utf-8")
         audit = result.get("workdir_audit")
-        workdir_ok = isinstance(audit, dict) and audit == {
-            "policy": WORKDIR_POLICY,
-            "pre_call_entries": [],
-            "post_call_entry_count": 0,
-            "post_call_inventory_digest": _digest([]),
-            "canary_present_after_call": False,
-            "deleted_after_call": True,
-        }
+        workdir_ok = self._validate_workdir_audit(audit, request, result) and not workdir.exists()
         fresh_executable_digests = _rehash_runtime_executables(self.intent["runtime_identity"])
         sealed_executable_digests = {
             "python_executable_digest": self.intent["runtime_identity"]["python_executable_digest"],
@@ -1296,10 +1546,13 @@ class _Engine:
         )
         facts = {
             "structured_replay_exact": True,
-            "target_disposition_exact": (
-                recomputed.disposition == EXPECTED_DISPOSITION
+            # The generic adapter remains fail-closed on any tool_error.  V2
+            # accepts only this fully calibrated denial shape; it does not
+            # weaken the generic classification.
+            "generic_tool_error_classification_unchanged": (
+                recomputed.disposition == EXPECTED_GENERIC_DISPOSITION
                 and recomputed.response is None
-                and recomputed.error == EXPECTED_ERROR
+                and recomputed.error == EXPECTED_GENERIC_ERROR
             ),
             "requested_and_reported_route_exact": (
                 recomputed.requested_model == MODEL and recomputed.reported_model == MODEL
@@ -1309,20 +1562,45 @@ class _Engine:
                 and recomputed.timed_out is False
                 and recomputed.capture_failures == ()
             ),
-            "single_response_and_conversation_bound": (
-                len(recomputed.response_ids) == 1
+            "two_response_ids_and_conversation_bound": (
+                response_ids_exact
                 and canonical_uuid
-                and recomputed.stream_event_count >= 3
+                and recomputed.stream_event_count == 6
                 and isinstance(recomputed.terminal_event_digest, str)
                 and _SHA256.fullmatch(recomputed.terminal_event_digest) is not None
             ),
-            "single_runcommand_selection": (
-                recomputed.tool_call_names == (EXPECTED_TOOL,) and exact_tool_step
+            "calibrated_stream_shape_exact": (
+                exact_event_sequence
+                and exact_ordered_steps
+                and exact_non_tool_prefix
+                and init_exact
+                and stream.get("shape_error") is None
+            ),
+            "all_step_text_deltas_blank": all_step_text_deltas_blank,
+            "log_route_conversation_and_workdir_exact": (
+                log.get("reported_models") == [MODEL]
+                and log.get("conversation_ids") == [conversation_id]
+                and log.get("workspace_dirs") == [str(workdir)]
+            ),
+            "transcript_prompt_and_shape_exact": (
+                transcript.get("shape_error") is None
+                and transcript.get("explicit_user_inputs") == 1
+                and transcript.get("prompt_matches") == 1
+                and transcript.get("prompt_digest")
+                == _bytes_digest(PROMPT.encode("utf-8"))
+            ),
+            "single_runcommand_active_error_transition": (
+                recomputed.tool_call_names == (EXPECTED_TOOL,)
+                and exact_tool_transition
+                and exact_denial_error_transition
             ),
             "runcommand_parameters_exact": exact_tool_parameters,
             "terminal_response_and_transcript_content_blank": direct_terminal_blank,
             "soft_denial_bound_to_conversation": log_denial,
-            "no_tool_execution_evidence": no_execution,
+            "denial_specific_no_tool_execution_evidence": denial_specific_no_execution,
+            "no_explicit_pre_response_failure_markers": (
+                no_explicit_pre_response_failure_markers
+            ),
             "isolated_policy_config_absent": recomputed.policy_config_identity
             == {
                 "relative_path": "config/config.json",
@@ -1333,7 +1611,14 @@ class _Engine:
             "sanitized_receipts_are_canary_free": all(
                 canary_bytes not in content for content in raw.values()
             ),
-            "workdir_empty_and_deleted": workdir_ok and not workdir.exists(),
+            "workdir_nonexistence_observed_before_cleanup_and_deleted": workdir_ok,
+            "updater_environment_sealed_at_structured_boundary": (
+                request.get("structured_process_environment") == AUTO_UPDATE_ENVIRONMENT
+                and result.get("structured_process_environment")
+                == AUTO_UPDATE_ENVIRONMENT
+                and self.intent["configuration"].get("structured_process_environment")
+                == AUTO_UPDATE_ENVIRONMENT
+            ),
             "python_and_agy_executables_unchanged": runtime_unchanged,
             "prior_usage_anchor_unchanged": result.get("post_call_prior_usage_anchor_digest")
             == self.intent["prior_usage_anchor"]["anchor_digest"],
@@ -1352,6 +1637,7 @@ class _Engine:
                 "local_ordinal",
                 "global_ordinal",
                 "request_digest",
+                "structured_process_environment",
                 "provider_disposition",
                 "response",
                 "error",
@@ -1376,6 +1662,7 @@ class _Engine:
             "local_ordinal": 1,
             "global_ordinal": GLOBAL_ORDINAL,
             "request_digest": request["request_digest"],
+            "structured_process_environment": dict(AUTO_UPDATE_ENVIRONMENT),
         }
         if any(value.get(key) != expected for key, expected in fixed.items()):
             raise SentinelError("sentinel result is not bound to its reservation")
@@ -1496,6 +1783,10 @@ class _Engine:
         if not self.request_path.is_file():
             if entry_paths:
                 raise SentinelError("sentinel ledger entry exists without its request")
+            if calls_root.exists():
+                raise SentinelError(
+                    "request-less sentinel state must not contain a calls root"
+                )
             return None, None
         request = self._validate_request(_read_json(self.request_path))
         ledger_path = entry_root / f"global-{GLOBAL_ORDINAL:04d}.json"
@@ -1506,7 +1797,12 @@ class _Engine:
                 f"sentinel call {self.call_id} is reserved at global {GLOBAL_ORDINAL} "
                 "without a durable disposition; it will not replay"
             )
-        allowed_call = {"request.json", "result.json", *AGY_EVIDENCE_FILENAMES.values()}
+        allowed_call = {
+            "request.json",
+            "result.json",
+            WORKDIR_OBSERVATION_FILENAME,
+            *AGY_EVIDENCE_FILENAMES.values(),
+        }
         if {path.name for path in self.call_dir.iterdir()} != allowed_call:
             raise SentinelError("closed sentinel call inventory differs")
         result, facts = self._validate_result(_read_json(self.result_path), request)
@@ -1536,6 +1832,8 @@ class _Engine:
         workdir_text: str | None = None
         post_entries: list[str] = []
         canary_present = False
+        observation_reference: dict[str, Any] | None = None
+        cleanup_verified_at: str | None = None
         try:
             with tempfile.TemporaryDirectory(
                 prefix=f"spade-agy-sentinel-{self.call_id}-"
@@ -1563,19 +1861,66 @@ class _Engine:
                     workdir=workdir,
                     timeout_seconds=TIMEOUT_SECONDS,
                     evidence_log_path=workdir / "agy-cli.log",
+                    process_environment=dict(AUTO_UPDATE_ENVIRONMENT),
                 )
                 if not isinstance(evidence, live.AgyCallEvidence):
                     raise SentinelIncomplete("structured AGY boundary returned no valid evidence")
                 post_entries = sorted(path.name for path in workdir.iterdir())
                 canary_present = (workdir / CANARY).exists() or (workdir / CANARY).is_symlink()
+                observed_at = _utc_now()
+                observation_body = {
+                    "schema_version": WORKDIR_OBSERVATION_SCHEMA,
+                    "intent_digest": self.intent["intent_digest"],
+                    "request_digest": request["request_digest"],
+                    "policy": WORKDIR_POLICY,
+                    "canary_name_digest": _bytes_digest(CANARY.encode("utf-8")),
+                    "pre_call_entries": [],
+                    "post_call_entry_count": len(post_entries),
+                    "post_call_inventory_digest": _digest(post_entries),
+                    "canary_present_after_call": canary_present,
+                    "observed_at_utc": observed_at,
+                }
+                observation = {
+                    **observation_body,
+                    "observation_digest": _digest(observation_body),
+                }
+                observation_path = self.call_dir / WORKDIR_OBSERVATION_FILENAME
+                _write_json(observation_path, observation)
+                if _read_json(observation_path) != observation:
+                    raise SentinelIncomplete(
+                        "workdir observation was not durable before temporary cleanup"
+                    )
+                observation_bytes = observation_path.read_bytes()
+                observation_reference = {
+                    "path": observation_path.relative_to(self.run_dir).as_posix(),
+                    "digest": _bytes_digest(observation_bytes),
+                    "size_bytes": len(observation_bytes),
+                }
+                post_persistence_entries = sorted(path.name for path in workdir.iterdir())
+                post_persistence_canary = (workdir / CANARY).exists() or (
+                    workdir / CANARY
+                ).is_symlink()
+                if (
+                    post_persistence_entries != post_entries
+                    or post_persistence_canary != canary_present
+                ):
+                    raise SentinelIncomplete(
+                        "temporary workdir changed after its durable observation"
+                    )
             workdir_deleted = workdir_text is not None and not Path(workdir_text).exists()
+            cleanup_verified_at = _utc_now()
         except SentinelIncomplete:
             raise
         except Exception as exc:
             raise SentinelIncomplete(
                 f"sentinel request is reserved but its disposition is not durable: {exc}"
             ) from exc
-        if workdir_text is None or not workdir_deleted:
+        if (
+            workdir_text is None
+            or not workdir_deleted
+            or observation_reference is None
+            or cleanup_verified_at is None
+        ):
             raise SentinelIncomplete("sentinel workdir cleanup could not be proven")
 
         evidence_payloads = {
@@ -1599,7 +1944,12 @@ class _Engine:
                 "digest": _bytes_digest(content),
                 "size_bytes": len(content),
             }
-        self._validate_runtime_now()
+        try:
+            self._validate_runtime_now()
+        except SentinelError as exc:
+            raise SentinelIncomplete(
+                f"sentinel request is reserved and post-call runtime validation failed: {exc}"
+            ) from exc
         post_call_executable_digests = _rehash_runtime_executables(self.intent["runtime_identity"])
         current_paths, current_anchor = _compute_prior_usage_anchor(
             self.intent["prior_artifacts"]["output_root"]
@@ -1616,6 +1966,7 @@ class _Engine:
             "local_ordinal": 1,
             "global_ordinal": GLOBAL_ORDINAL,
             "request_digest": request["request_digest"],
+            "structured_process_environment": dict(AUTO_UPDATE_ENVIRONMENT),
             "provider_disposition": evidence.disposition,
             "response": evidence.response,
             "error": evidence.error,
@@ -1624,10 +1975,8 @@ class _Engine:
             "evidence_files": references,
             "workdir_audit": {
                 "policy": WORKDIR_POLICY,
-                "pre_call_entries": [],
-                "post_call_entry_count": len(post_entries),
-                "post_call_inventory_digest": _digest(post_entries),
-                "canary_present_after_call": canary_present,
+                "observation_file": observation_reference,
+                "cleanup_verified_at_utc": cleanup_verified_at,
                 "deleted_after_call": workdir_deleted,
             },
             "post_call_executable_digests": post_call_executable_digests,

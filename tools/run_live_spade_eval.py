@@ -1216,7 +1216,7 @@ def analyze_agy_evidence(
     sanitized_log_receipt: bool = False,
     sanitized_transcript_receipt: bool = False,
 ) -> AgyCallEvidence:
-    """Classify a 1.1.23 structured call; every uncertainty fails closed."""
+    """Classify a runtime-bound structured call; every uncertainty fails closed."""
     workdir = str(invocation_workdir)
     failures = tuple(str(item) for item in capture_failures)
     (
@@ -1571,8 +1571,10 @@ def get_llm_client(
     return AsyncOpenAI(base_url=url, api_key=key, timeout=timeout_seconds), resolved_model
 
 
-def _agy_environment() -> dict[str, str]:
-    """Pass only inert process-startup variables, never AGY conversation context."""
+def _agy_environment(
+    process_environment: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Pass inert startup variables plus an explicitly allowed AGY guard."""
     exact = {
         "HOME",
         "PATH",
@@ -1584,7 +1586,14 @@ def _agy_environment() -> dict[str, str]:
         "LC_ALL",
         "TERM",
     }
-    return {key: value for key, value in os.environ.items() if key in exact}
+    environment = {key: value for key, value in os.environ.items() if key in exact}
+    overrides = dict(process_environment or {})
+    if any(not isinstance(key, str) or not isinstance(value, str) for key, value in overrides.items()):
+        raise LiveEvalError("agy process environment must contain only string pairs", 4)
+    if overrides not in ({}, {"AGY_CLI_DISABLE_AUTO_UPDATE": "1"}):
+        raise LiveEvalError("agy process environment contains an unsupported override", 4)
+    environment.update(overrides)
+    return environment
 
 
 async def _read_stream_limited(
@@ -1855,8 +1864,9 @@ async def call_llm_with_evidence(
     workdir: Path,
     timeout_seconds: float = 180.0,
     evidence_log_path: Path | None = None,
+    process_environment: Mapping[str, str] | None = None,
 ) -> AgyCallEvidence:
-    """Run one AGY 1.1.23 call and return a bounded, self-classifying receipt."""
+    """Run one runtime-bound AGY call and return a bounded, self-classifying receipt."""
     if provider != "agy":
         raise LiveEvalError("structured evidence is currently supported only for agy", 4)
     full_prompt = f"{system}\n\n{prompt}" if system else prompt
@@ -1910,7 +1920,7 @@ async def call_llm_with_evidence(
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(workdir),
-            env=_agy_environment(),
+            env=_agy_environment(process_environment),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

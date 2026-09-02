@@ -482,6 +482,7 @@ def test_structured_agy_subprocess_uses_stream_json_and_unique_log(
         nonlocal captured_command
         captured_command = command
         assert kwargs["cwd"] == fixture["workdir"]
+        assert kwargs["env"]["AGY_CLI_DISABLE_AUTO_UPDATE"] == "1"
         log_path = Path(command[command.index("--log-file") + 1])
         gemini_dir = Path(command[command.index("--gemini_dir") + 1])
         private_log = fixture["log"].replace(
@@ -510,6 +511,7 @@ def test_structured_agy_subprocess_uses_stream_json_and_unique_log(
             str(fixture["prompt"]),
             workdir=tmp_path,
             evidence_log_path=tmp_path / "unique.log",
+            process_environment={"AGY_CLI_DISABLE_AUTO_UPDATE": "1"},
         )
     )
     assert evidence.disposition == "response"
@@ -532,6 +534,20 @@ def test_structured_agy_subprocess_uses_stream_json_and_unique_log(
     assert json.loads(evidence.stderr)["schema_version"] == live.AGY_STDERR_RECEIPT_SCHEMA
     assert b"private chain of thought" not in evidence.transcript
     assert b"do-not-persist" not in evidence.stdout_ndjson
+
+
+def test_agy_environment_override_is_narrow_and_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGY_CLI_DISABLE_AUTO_UPDATE", "inherited-but-not-authorized")
+    assert "AGY_CLI_DISABLE_AUTO_UPDATE" not in live._agy_environment()
+    assert live._agy_environment({"AGY_CLI_DISABLE_AUTO_UPDATE": "1"})[
+        "AGY_CLI_DISABLE_AUTO_UPDATE"
+    ] == "1"
+    with pytest.raises(live.LiveEvalError, match="unsupported override"):
+        live._agy_environment({"AGY_CLI_DISABLE_AUTO_UPDATE": "0"})
+    with pytest.raises(live.LiveEvalError, match="unsupported override"):
+        live._agy_environment({"UNSEALED_SECRET": "value"})
 
 
 def test_bounded_evidence_reader_rejects_symlink_and_oversize(tmp_path: Path) -> None:
