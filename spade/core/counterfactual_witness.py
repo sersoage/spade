@@ -20,6 +20,9 @@ from typing import Any, Dict, Iterable, Literal, Optional, Tuple
 WITNESS_SCHEMA_VERSION = "spade-counterfactual-witness/v1"
 MUTATION_CATALOG_VERSION = "spade-counterfactual-mutations/v1"
 SELECTION_ALGORITHM = "safe-inverse-family-greedy-set-cover/v1"
+RESET_SIGNATURE_SELECTION_ALGORITHM = (
+    "safe-inverse-family-greedy-set-cover-plus-reset-signature-coverage/v1"
+)
 
 VariantKind = Literal["semantic_mutant", "equivalent_control"]
 SelectionPartition = Literal["train", "heldout"]
@@ -754,6 +757,109 @@ def select_witnesses(matrix: WitnessMatrix, *, budget: int = 16) -> WitnessSelec
     )
 
 
+def select_witnesses_with_reset_signature_coverage(
+    matrix: WitnessMatrix, *, budget: int = 16
+) -> WitnessSelection:
+    """Select safe probes by training gain, then seed/reset-state coverage.
+
+    The first score coordinate is exactly the legacy inverse-family-weighted
+    training-mutant gain.  The second favors a probe whose seed/reset-observation
+    atom is not represented yet.  Length and digest remain deterministic final
+    tie-breakers.  Held-out variants never participate in selection.
+    """
+    if type(budget) is not int or budget <= 0:
+        raise ValueError("budget must be positive")
+    matrix.validate()
+    controls = tuple(
+        variant
+        for variant in matrix.variants
+        if variant.kind == "equivalent_control" and variant.partition == "train"
+    )
+    mutants = tuple(
+        variant
+        for variant in matrix.variants
+        if variant.kind == "semantic_mutant" and variant.partition == "train"
+    )
+    family_sizes = Counter(variant.family for variant in mutants)
+    safe: list[WitnessProbe] = []
+    breakers: list[str] = []
+    kills_by_probe: Dict[str, set[str]] = {}
+    for probe in matrix.probes:
+        base = matrix.signature(probe.probe_id, matrix.base_key).digest
+        if any(
+            matrix.signature(probe.probe_id, control.variant_id).digest != base
+            for control in controls
+        ):
+            breakers.append(probe.probe_id)
+            continue
+        safe.append(probe)
+        kills_by_probe[probe.probe_id] = {
+            mutant.variant_id
+            for mutant in mutants
+            if matrix.signature(probe.probe_id, mutant.variant_id).digest != base
+        }
+
+    seeds = {probe.seed for probe in matrix.probes}
+    safe_ids = {probe.probe_id for probe in safe}
+    reset_by_seed: dict[int, WitnessProbe] = {}
+    for seed in seeds:
+        reset_probes = [
+            probe for probe in matrix.probes if probe.seed == seed and probe.role == "reset"
+        ]
+        if len(reset_probes) != 1:
+            raise ValueError("probe bank must contain exactly one reset probe per seed")
+        reset_probe = reset_probes[0]
+        if reset_probe.probe_id not in safe_ids:
+            raise ValueError("reset-signature coverage requires control-safe reset probes")
+        reset_by_seed[seed] = reset_probe
+
+    atom_by_seed: dict[int, tuple[int, str]] = {}
+    for seed, probe in reset_by_seed.items():
+        reset_signature = matrix.signature(probe.probe_id, matrix.base_key)
+        if not reset_signature.observation_digests:
+            raise ValueError("base reset signature lacks an observation digest")
+        atom_by_seed[seed] = (seed, reset_signature.observation_digests[0])
+    mutant_by_id = {variant.variant_id: variant for variant in mutants}
+    uncovered = set(mutant_by_id)
+    uncovered_atoms = set(atom_by_seed.values())
+    selected: list[WitnessProbe] = []
+    available = list(safe)
+    while available and len(selected) < budget:
+        scored: list[Tuple[float, int, int, str, WitnessProbe]] = []
+        for probe in available:
+            newly_killed = kills_by_probe[probe.probe_id] & uncovered
+            training_gain = sum(
+                1.0 / family_sizes[mutant_by_id[variant_id].family]
+                for variant_id in newly_killed
+            )
+            reset_gain = int(atom_by_seed[probe.seed] in uncovered_atoms)
+            scored.append((-training_gain, -reset_gain, len(probe.actions), probe.probe_id, probe))
+        scored.sort(key=lambda value: value[:4])
+        negative_training_gain, negative_reset_gain, _length, _probe_id, winner = scored[0]
+        if negative_training_gain == 0 and negative_reset_gain == 0:
+            break
+        selected.append(winner)
+        uncovered.difference_update(kills_by_probe[winner.probe_id])
+        uncovered_atoms.discard(atom_by_seed[winner.seed])
+        available = [probe for probe in available if probe.probe_id != winner.probe_id]
+
+    killed = set(mutant_by_id) - uncovered
+    coverage: Dict[str, Tuple[int, int]] = {}
+    for family, total in sorted(family_sizes.items()):
+        family_ids = {variant.variant_id for variant in mutants if variant.family == family}
+        coverage[family] = (len(family_ids & killed), total)
+    return WitnessSelection(
+        selected_probe_ids=tuple(probe.probe_id for probe in selected),
+        safe_probe_ids=tuple(probe.probe_id for probe in safe),
+        rejected_control_breakers=tuple(breakers),
+        killed_train_mutants=tuple(sorted(killed)),
+        uncovered_train_mutants=tuple(sorted(uncovered)),
+        family_coverage=coverage,
+        budget=budget,
+        algorithm=RESET_SIGNATURE_SELECTION_ALGORITHM,
+    )
+
+
 @dataclass(frozen=True)
 class SelectionScore:
     mutant_recall: float
@@ -918,6 +1024,7 @@ def verify_witness_signatures(
 
 __all__ = [
     "MUTATION_CATALOG_VERSION",
+    "RESET_SIGNATURE_SELECTION_ALGORITHM",
     "SELECTION_ALGORITHM",
     "WITNESS_SCHEMA_VERSION",
     "SelectionScore",
@@ -935,6 +1042,7 @@ __all__ = [
     "proofpack_compatible_entrypoints",
     "score_probe_ids",
     "select_witnesses",
+    "select_witnesses_with_reset_signature_coverage",
     "source_digest",
     "trace_signature",
     "verify_witness_signatures",

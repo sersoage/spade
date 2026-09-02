@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from spade.core.counterfactual_witness import (
+    RESET_SIGNATURE_SELECTION_ALGORITHM,
+    SELECTION_ALGORITHM,
     WitnessMatrix,
     WitnessProbe,
     build_candidate_probes,
@@ -18,6 +20,7 @@ from spade.core.counterfactual_witness import (
     proofpack_compatible_entrypoints,
     score_probe_ids,
     select_witnesses,
+    select_witnesses_with_reset_signature_coverage,
     source_digest,
     trace_signature,
     verify_witness_signatures,
@@ -277,6 +280,114 @@ def test_safe_set_cover_excludes_control_breakers_and_ignores_heldout() -> None:
     assert heldout.total_mutants > 0
     assert heldout.mutant_recall == 1.0
     assert heldout.equivalent_false_rejection_rate == 1.0
+
+
+def _reset_coverage_matrix() -> tuple[WitnessMatrix, dict[str, WitnessProbe]]:
+    probes = {
+        "broad": WitnessProbe.create(seed=0, actions=("solve",), role="broad"),
+        "reset_0": WitnessProbe.create(seed=0, actions=(), role="reset"),
+        "reset_1": WitnessProbe.create(seed=1, actions=(), role="reset"),
+        "reset_42": WitnessProbe.create(seed=42, actions=(), role="reset"),
+    }
+    variants = generate_source_variants(BOXED_GAME)
+    train_mutants = [
+        variant
+        for variant in variants
+        if variant.kind == "semantic_mutant" and variant.partition == "train"
+    ]
+    heldout_mutants = [
+        variant
+        for variant in variants
+        if variant.kind == "semantic_mutant" and variant.partition == "heldout"
+    ]
+    base_by_seed = {0: _signature("reset-zero"), 1: _signature("reset-one"), 42: _signature("reset-42")}
+    rows = {
+        probe.probe_id: {
+            "base": base_by_seed[probe.seed],
+            **{variant.variant_id: base_by_seed[probe.seed] for variant in variants},
+        }
+        for probe in probes.values()
+    }
+    for mutant in train_mutants:
+        rows[probes["broad"].probe_id][mutant.variant_id] = _signature(
+            f"train-changed-{mutant.variant_id}"
+        )
+    rows[probes["reset_1"].probe_id][heldout_mutants[0].variant_id] = _signature(
+        "heldout-seed-one-changed"
+    )
+    rows[probes["reset_42"].probe_id][heldout_mutants[1].variant_id] = _signature(
+        "heldout-seed-42-changed"
+    )
+    return (
+        WitnessMatrix(
+            base_environment_digest=source_digest(BOXED_GAME),
+            probes=tuple(probes.values()),
+            variants=variants,
+            signatures=rows,
+        ),
+        probes,
+    )
+
+
+def test_reset_signature_selector_preserves_training_and_covers_each_base_reset_state() -> None:
+    matrix, probes = _reset_coverage_matrix()
+
+    legacy = select_witnesses(matrix, budget=3)
+    covered = select_witnesses_with_reset_signature_coverage(matrix, budget=3)
+
+    assert legacy.selected_probe_ids == (probes["broad"].probe_id,)
+    assert covered.selected_probe_ids == (
+        probes["broad"].probe_id,
+        probes["reset_1"].probe_id,
+        probes["reset_42"].probe_id,
+    )
+    assert covered.killed_train_mutants == legacy.killed_train_mutants
+    assert not covered.uncovered_train_mutants
+    assert legacy.algorithm == SELECTION_ALGORITHM
+    assert covered.algorithm == RESET_SIGNATURE_SELECTION_ALGORITHM
+    assert score_probe_ids(matrix, covered.selected_probe_ids).killed_mutants == 2
+    assert score_probe_ids(matrix, legacy.selected_probe_ids).killed_mutants == 0
+
+
+def test_reset_signature_selector_respects_budget_before_all_seed_atoms_are_covered() -> None:
+    matrix, probes = _reset_coverage_matrix()
+
+    selection = select_witnesses_with_reset_signature_coverage(matrix, budget=2)
+
+    assert selection.selected_probe_ids == (
+        probes["broad"].probe_id,
+        probes["reset_1"].probe_id,
+    )
+    assert not selection.uncovered_train_mutants
+
+
+def test_reset_signature_selector_ignores_heldout_signatures() -> None:
+    matrix, _probes = _reset_coverage_matrix()
+    expected = select_witnesses_with_reset_signature_coverage(matrix, budget=3)
+
+    for probe in matrix.probes:
+        for variant in matrix.variants:
+            if variant.partition == "heldout":
+                matrix.signatures[probe.probe_id][variant.variant_id] = _signature(
+                    f"arbitrary-heldout-change-{probe.probe_id}-{variant.variant_id}"
+                )
+
+    assert select_witnesses_with_reset_signature_coverage(matrix, budget=3) == expected
+
+
+def test_reset_signature_selector_rejects_a_training_control_unsafe_reset() -> None:
+    matrix, probes = _reset_coverage_matrix()
+    training_control = next(
+        variant
+        for variant in matrix.variants
+        if variant.kind == "equivalent_control" and variant.partition == "train"
+    )
+    matrix.signatures[probes["reset_1"].probe_id][training_control.variant_id] = _signature(
+        "control-breaker"
+    )
+
+    with pytest.raises(ValueError, match="control-safe reset probes"):
+        select_witnesses_with_reset_signature_coverage(matrix, budget=3)
 
 
 def test_certificate_is_content_bound_and_verifiable() -> None:
