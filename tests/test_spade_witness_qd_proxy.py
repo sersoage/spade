@@ -185,6 +185,83 @@ def test_extended_runtime_identity_validates_legacy_base_schema(tmp_path: Path) 
     assert pilot._validate_runtime_identity(extended) == extended
 
 
+def test_historical_and_challenger_hints_keep_distinct_lineage_schemas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pilot.live, "hint_reveals_solution", lambda *_args: False)
+    probe = {
+        "observation": "sealed observation",
+        "observation_digest": pilot._digest("sealed observation"),
+        "solution": ["\\boxed{sealed}"],
+        "solution_digest": pilot._digest(["\\boxed{sealed}"]),
+    }
+    historical_body = {
+        "schema_version": "spade-agy-hint-attempt/v1",
+        "plan_digest": _sha(1),
+        "cluster_id": "c001",
+        "candidate_id": "c001-primary",
+        "seed": 0,
+        "attempt": 1,
+        "call_id": "hint-historical",
+        "status": "accepted",
+        "reason": "accepted",
+        "hint": "Track the invariant without revealing the answer.",
+        "hint_digest": pilot._digest("Track the invariant without revealing the answer."),
+        "feedback_for_next_attempt": "",
+    }
+    historical = {
+        **historical_body,
+        "attempt_digest": pilot._digest(historical_body),
+    }
+    pilot._Engine._validate_candidate_hint(
+        historical,
+        probe=probe,
+        seed_text="0",
+        source_arm="v3",
+    )
+
+    challenger_body = {
+        "schema_version": "spade-coverage-forced-hint-attempt/v1",
+        "intent_digest": _sha(2),
+        "candidate_id": "c001--challenger",
+        "seed": 0,
+        "attempt": 1,
+        "call_id": "hint-challenger",
+        "status": "accepted",
+        "reason": "nonleaking",
+        "hint": "Track the invariant without revealing the answer.",
+        "hint_digest": pilot._digest("Track the invariant without revealing the answer."),
+        "observation_digest": probe["observation_digest"],
+        "solution_digest": probe["solution_digest"],
+        "feedback_for_next_attempt": "",
+    }
+    challenger = {
+        **challenger_body,
+        "attempt_digest": pilot._digest(challenger_body),
+    }
+    pilot._Engine._validate_candidate_hint(
+        challenger,
+        probe=probe,
+        seed_text="0",
+        source_arm="challenger",
+    )
+
+    missing_lineage_body = {
+        key: value for key, value in challenger_body.items() if key != "solution_digest"
+    }
+    missing_lineage = {
+        **missing_lineage_body,
+        "attempt_digest": pilot._digest(missing_lineage_body),
+    }
+    with pytest.raises(pilot.ProxyExperimentError, match="invalid digests"):
+        pilot._Engine._validate_candidate_hint(
+            missing_lineage,
+            probe=probe,
+            seed_text="0",
+            source_arm="challenger",
+        )
+
+
 def test_failure_category_is_recomputed_not_trusted(tmp_path: Path) -> None:
     engine = _engine(tmp_path)
     request = _request(engine)

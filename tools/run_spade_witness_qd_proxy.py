@@ -2199,6 +2199,44 @@ class _Engine:
         raise ProxyExperimentIncomplete(f"hint attempts exhausted for {candidate_id}/{seed}")
 
     @staticmethod
+    def _validate_candidate_hint(
+        hint: object,
+        *,
+        probe: Mapping[str, Any],
+        seed_text: str,
+        source_arm: str,
+    ) -> None:
+        if not isinstance(hint, dict) or hint.get("status") != "accepted":
+            raise ProxyExperimentError("candidate hint is not accepted")
+        hint_text = hint.get("hint")
+        invalid = (
+            not isinstance(hint_text, str)
+            or not hint_text
+            or hint.get("hint_digest") != _digest(hint_text)
+            or hint.get("attempt_digest")
+            != _digest({key: item for key, item in hint.items() if key != "attempt_digest"})
+            or live.hint_reveals_solution(
+                hint_text, probe.get("solution"), str(probe.get("observation"))
+            )
+        )
+        if source_arm in {"v3", "v4"}:
+            invalid = invalid or (
+                hint.get("schema_version") != "spade-agy-hint-attempt/v1"
+                or hint.get("seed") != int(seed_text)
+                or "observation_digest" in hint
+                or "solution_digest" in hint
+            )
+        else:
+            invalid = invalid or (
+                hint.get("schema_version") != "spade-coverage-forced-hint-attempt/v1"
+                or hint.get("seed") != int(seed_text)
+                or hint.get("observation_digest") != probe.get("observation_digest")
+                or hint.get("solution_digest") != probe.get("solution_digest")
+            )
+        if invalid:
+            raise ProxyExperimentError("candidate hint receipt leaks or has invalid digests")
+
+    @staticmethod
     def _validate_candidate_evidence(value: Mapping[str, Any]) -> Mapping[str, Any]:
         required = {
             "schema_version",
@@ -2278,23 +2316,12 @@ class _Engine:
                 != _digest(probe.get("qualification_oracle"))
             ):
                 raise ProxyExperimentError("candidate probe receipt differs")
-            hint = hints[seed_text]
-            if not isinstance(hint, dict) or hint.get("status") != "accepted":
-                raise ProxyExperimentError("candidate hint is not accepted")
-            hint_text = hint.get("hint")
-            if (
-                not isinstance(hint_text, str)
-                or not hint_text
-                or hint.get("hint_digest") != _digest(hint_text)
-                or hint.get("observation_digest") != probe.get("observation_digest")
-                or hint.get("solution_digest") != probe.get("solution_digest")
-                or hint.get("attempt_digest")
-                != _digest({key: item for key, item in hint.items() if key != "attempt_digest"})
-                or live.hint_reveals_solution(
-                    hint_text, probe.get("solution"), str(probe.get("observation"))
-                )
-            ):
-                raise ProxyExperimentError("candidate hint receipt leaks or has invalid digests")
+            _Engine._validate_candidate_hint(
+                hints[seed_text],
+                probe=probe,
+                seed_text=seed_text,
+                source_arm=str(source_arm),
+            )
         viability = value["one_turn_viability"]
         if (
             not isinstance(viability, dict)
