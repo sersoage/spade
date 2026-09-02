@@ -272,22 +272,51 @@ PROXY_INTENT="$PROXY_ROOT/intent.json"
   --acknowledge-new-call-cap 208
 ```
 
-### Result — pending execution
+### Result — incomplete, fail-closed
 
 | Field | Result |
 | --- | --- |
-| Status | Pending; no proxy AGY calls launched at publication time |
-| Intent / actor-plan / aggregate digests | Pending / pending / pending |
-| New / global charged calls | 0 / 205 at publication time |
-| Maximum / mean absolute quality gap | Pending / pending |
-| Pooled baseline / discordant pairs | Pending / pending |
-| Coverage-forced delta | Pending |
-| Label-permutation / sign-flip sensitivity | Pending / pending |
-| Leave-one-stratum-out / exogenous / parser diagnostics | Pending |
+| Status | Incomplete; runner exited fail-closed with 12 of 36 pairs unresolved after all permitted waves |
+| Intent / actor-plan / aggregate digests | `sha256:df1a06c7fb854d5267ec4d1e41cd44c1ffd229018bf0f5a0dcde512fa47c4c09` / `sha256:fc7989bfffb0851363137fe450e94cf11c8a4658b104f2f2729c08e98d843c2a` / none |
+| New / global charged calls | 111 / 316 of 450 |
+| Maximum / mean absolute quality gap | `0.125` / `0.0208333` |
+| Actor call results | 90 closed calls: 53 nonempty responses and 37 outputs recorded as exact `empty_response` errors; no ambiguity |
+| Pair closure | 24 resolutions (23 on attempt 1, one on attempt 2); 12 terminally unresolved pairs |
+| Descriptive resolved prefix | 24/24 unhinted rewards and 24/24 hinted rewards were positive; 24 ceiling ties and zero discordant pairs |
+| Coverage-forced delta | Not estimated; the panel is incomplete |
+| Label-permutation / sign-flip sensitivity | Not run; no complete aggregate exists |
+| Leave-one-stratum-out / runner-classified exogenous / parser diagnostics | Not run / first-wave `13/36 = 36.11%` (gate `<= 15%`) / zero returned-text parser or environment failures |
 | Assay / release authorized / learner claim | Not run / false / none |
 
-Even if every gate passes, the result is only an exploratory, noncausal quality-matched
-coverage-forced portfolio-swap association over these realized environment-plus-hint packages. It
-does not establish causal selector benefit, QD or archive superiority, environment-quality
-improvement, learner improvement, or backend identity. A compute-matched learner-lineage
-experiment is still required to claim that SPADE itself improved.
+The terminal evidence is internally closed: all 111 request/result/ledger records match, whole-pair
+retry isolation validates, and every persisted successful arm replays deterministically. The
+failure is scientific rather than evidentiary. A post-run audit of the call-specific AGY logs found
+that all 37 empty outputs followed `Print mode: soft-denying tool confirmation "RunCommand"`; they
+were model tool-use attempts, not attested provider outages. The runner therefore misclassified
+behavioral failures as retryable exogenous failures. That defect independently invalidates the
+planned analysis, even aside from panel incompleteness and the fact that every retained pair hit the
+task ceiling. The diagnostic logs were not bound into the original experiment seal, so they can
+identify the harness defect but cannot retroactively reclassify or salvage its outcomes. Because the
+panel is incomplete, the zero partial deltas are descriptive only and must not be pooled, manually
+aggregated, or treated as an improvement estimate. The requested model routes remain
+backend-unattested.
+
+The run therefore establishes neither a coverage-forced portfolio association nor causal selector
+benefit, QD or archive superiority, environment-quality improvement, learner improvement, or
+backend identity. Before another run, the AGY boundary must make denied tool requests explicit and
+score them once as model behavior, never retry them as transport loss. A new prospectively sealed
+experiment also needs a non-ceiling task—and ultimately a compute-matched learner-lineage
+experiment—to claim that SPADE itself improved.
+
+The repaired boundary now captures AGY's structured event stream in an isolated per-call Gemini
+directory and persists only digest-bound sanitized stream, stderr, log, and transcript receipts. It
+treats a soft-denied tool selection as terminal zero-reward model behavior, treats possible
+execution as fatal, and permits a retry only for an explicit provider failure before any response
+ID. A separately sealed paid sentinel is still required to validate the installed AGY 1.1.23 wire
+format before this adapter can support a new experiment.
+
+The remaining 134 calls in the 450-call authorization were not spent. An AGY-only inference rerun
+cannot establish learner improvement because it contains no parameter update, same-checkpoint
+treatment/control branches, or compute-matched learner lineages. A separately authorized narrow
+proxy could test immediate no-tool hint responsiveness after the adapter is fixed, but that would
+still not answer whether SPADE training improved.

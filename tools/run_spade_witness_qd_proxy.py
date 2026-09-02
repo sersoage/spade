@@ -16,8 +16,9 @@ The protocol has two chronological seals:
 
 Every provider request is durably reserved in both its run and the shared
 global ledger before spawn.  A surviving request without a result is ambiguous
-and is never replayed.  Only exact empty-response and provider-timeout failures
-open a whole-pair actor retry.
+and is never replayed.  Only an explicit provider refusal/unavailability before
+any ResponseID opens a whole-pair actor retry. A model-selected, soft-denied
+tool call is an observed zero-reward action, not an exogenous failure.
 """
 
 from __future__ import annotations
@@ -77,6 +78,8 @@ ACTOR_PLAN_SCHEMA = "spade-coverage-forced-actor-plan/v1"
 RUN_SCHEMA = "spade-coverage-forced-run/v1"
 CALL_REQUEST_SCHEMA = "spade-coverage-forced-call-request/v1"
 CALL_RESULT_SCHEMA = "spade-coverage-forced-call-result/v1"
+CALL_REQUEST_SCHEMA_V2 = "spade-coverage-forced-call-request/v2"
+CALL_RESULT_SCHEMA_V2 = "spade-coverage-forced-call-result/v2"
 LEDGER_HEADER_SCHEMA = "spade-shared-agy-ledger/v1"
 LEDGER_ENTRY_SCHEMA = "spade-shared-agy-ledger-entry/v1"
 CANDIDATE_SCHEMA = "spade-coverage-forced-candidate-evidence/v1"
@@ -85,10 +88,26 @@ PAIR_ATTEMPT_SCHEMA = "spade-coverage-forced-pair-attempt/v1"
 PAIR_RESOLUTION_SCHEMA = "spade-coverage-forced-pair-resolution/v1"
 AGGREGATE_SCHEMA = "spade-coverage-forced-aggregate/v1"
 PROTOCOL_ID = "spade-google-coverage-forced-matched-swap-pilot/v1"
+ARM_SCHEMA_V2 = "spade-coverage-forced-arm/v2"
+
+AGY_EVIDENCE_FILENAMES = {
+    "stdout_ndjson": "agy.stream-receipt.json",
+    "stderr": "agy.stderr-receipt.json",
+    "log": "agy.log-receipt.json",
+    "transcript": "agy.transcript-receipt.json",
+}
+AGY_EVIDENCE_LIMITS = {
+    "stdout_ndjson": live.MAX_LLM_RESPONSE_BYTES,
+    "stderr": live.MAX_LLM_STDERR_BYTES,
+    "log": live.MAX_AGY_LOG_BYTES,
+    "transcript": live.MAX_AGY_TRANSCRIPT_BYTES,
+}
 
 V3_PLAN_DIGEST = "sha256:1ac5e27ddad0f68baaa54bd9eb67a6950773226cd936afd1a890a475822b2746"
 V4_PLAN_DIGEST = "sha256:8edc56d38e3502dd1e85db8b670b258ead9a4e1eddcd7d807e6a05e7b56df5fc"
 V4_COHORT_DIGEST = "sha256:161353ebd4454516e3379414444323dd13aeab95640eb130ec7414f23876b84b"
+LEGACY_INTENT_DIGEST = "sha256:df1a06c7fb854d5267ec4d1e41cd44c1ffd229018bf0f5a0dcde512fa47c4c09"
+LEGACY_ACTOR_PLAN_DIGEST = "sha256:fc7989bfffb0851363137fe450e94cf11c8a4658b104f2f2729c08e98d843c2a"
 DESIGN_MODEL = "gemini-3.1-pro-high"
 ACTOR_MODEL = "gemini-3.7-flash-high"
 SEEDS = (0, 42)
@@ -112,6 +131,25 @@ PRE_ACTOR_CALL_CEILING = (
 )
 ACTOR_CALL_CEILING = FIRST_TWO_ACTOR_WAVES + THIRD_ACTOR_WAVE_CEILING
 _SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,191}$")
+
+LEGACY_ACTOR_ATTEMPT_POLICY = {
+    "whole_pair_retries": True,
+    "waves_1_and_2": "all-unresolved",
+    "wave_3": "only-if-unresolved-after-wave-2-at-most-14",
+    "retryable_failure_categories": ["empty_response", "provider_timeout"],
+    "nonempty_parser_misses_are_zero_reward_and_not_retried": True,
+    "environment_runtime_integrity_failures_are_fatal": True,
+}
+STRUCTURED_ACTOR_ATTEMPT_POLICY = {
+    "whole_pair_retries": True,
+    "waves_1_and_2": "all-unresolved",
+    "wave_3": "only-if-unresolved-after-wave-2-at-most-14",
+    "retryable_failure_categories": ["pre_response_provider_failure"],
+    "model_tool_calls_are_zero_reward_and_not_retried": True,
+    "nonempty_parser_misses_are_zero_reward_and_not_retried": True,
+    "unknown_or_post_response_failures_are_fatal": True,
+    "environment_runtime_integrity_failures_are_fatal": True,
+}
 
 if PRE_ACTOR_CALL_CEILING != 36 or ACTOR_CALL_CEILING != 172:
     raise AssertionError("sealed phase call ceilings drifted")
@@ -145,6 +183,7 @@ class _Target(Protocol):
 
 
 LlmCall = Callable[..., Awaitable[str]]
+StructuredLlmCall = Callable[..., Awaitable[live.AgyCallEvidence]]
 
 
 @dataclass(frozen=True)
@@ -159,6 +198,13 @@ class RunnerDependencies:
     cwa_evaluator: (
         Callable[[Mapping[str, Any], Callable[..., _Target]], Mapping[str, Any]] | None
     ) = None
+    structured_llm_call: StructuredLlmCall | None = None
+
+
+@dataclass(frozen=True)
+class _ModelCallOutput:
+    text: str
+    disposition: str
 
 
 @dataclass(frozen=True)
@@ -833,6 +879,7 @@ def _default_dependencies(intent: Mapping[str, Any]) -> RunnerDependencies:
         target_factory=live.SpadeEnvironmentTarget,
         client_or_bin=client_or_bin,
         runtime_identity=runtime,
+        structured_llm_call=live.call_llm_with_evidence,
     )
 
 
@@ -844,7 +891,7 @@ class _RecordedCallFailure(Exception):
 
     @property
     def retryable(self) -> bool:
-        return self.category in {"empty_response", "provider_timeout"}
+        return self.category == "pre_response_provider_failure"
 
     def __str__(self) -> str:
         return f"{self.call_id}: {self.category}: {self.error}"
@@ -1009,7 +1056,7 @@ class _Engine:
     def _validate_call_request(
         self, value: Mapping[str, Any], expected: Mapping[str, Any] | None = None
     ) -> Mapping[str, Any]:
-        keys = {
+        legacy_keys = {
             "schema_version",
             "intent_digest",
             "actor_plan_digest",
@@ -1033,7 +1080,18 @@ class _Engine:
             "reserved_at_utc",
             "request_digest",
         }
-        if set(value) != keys or value.get("schema_version") != CALL_REQUEST_SCHEMA:
+        structured_keys = legacy_keys | {
+            "output_format",
+            "log_policy",
+            "evidence_policy",
+        }
+        schema = value.get("schema_version")
+        if not (
+            schema == CALL_REQUEST_SCHEMA
+            and set(value) == legacy_keys
+            or schema == CALL_REQUEST_SCHEMA_V2
+            and set(value) == structured_keys
+        ):
             raise ProxyExperimentError("provider request fields differ from schema")
         body = {key: item for key, item in value.items() if key != "request_digest"}
         if value["request_digest"] != _digest(body):
@@ -1061,6 +1119,13 @@ class _Engine:
         }
         if any(value.get(key) != item for key, item in fixed.items()):
             raise ProxyExperimentError("provider request differs from sealed identity")
+        if schema == CALL_REQUEST_SCHEMA_V2 and (
+            value.get("output_format") != live.AGY_OUTPUT_FORMAT
+            or value.get("log_policy") != live.AGY_LOG_POLICY
+            or value.get("evidence_policy")
+            != "bounded-sanitized-stream-stderr-log-transcript-receipts-with-exact-digests"
+        ):
+            raise ProxyExperimentError("provider request structured-evidence policy differs")
         if expected and any(value.get(key) != item for key, item in expected.items()):
             raise ProxyExperimentError("provider request differs from expected call")
         if value["call_id"] != base._call_id(purpose):
@@ -1077,6 +1142,8 @@ class _Engine:
     def _validate_call_result(
         self, value: Mapping[str, Any], request: Mapping[str, Any]
     ) -> Mapping[str, Any]:
+        if value.get("schema_version") == CALL_RESULT_SCHEMA_V2:
+            return self._validate_structured_call_result(value, request)
         keys = {
             "schema_version",
             "intent_digest",
@@ -1169,6 +1236,195 @@ class _Engine:
             raise ProxyExperimentError("provider result status is invalid")
         return value
 
+    def _validate_structured_call_result(
+        self, value: Mapping[str, Any], request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        keys = {
+            "schema_version",
+            "intent_digest",
+            "call_id",
+            "local_ordinal",
+            "global_ordinal",
+            "request_digest",
+            "status",
+            "failure_category",
+            "provider_disposition",
+            "exception_type",
+            "error",
+            "exit_status",
+            "response",
+            "response_digest",
+            "agy_evidence",
+            "evidence_files",
+            "started_at_utc",
+            "finished_at_utc",
+            "duration_seconds",
+            "result_digest",
+        }
+        if set(value) != keys or request.get("schema_version") != CALL_REQUEST_SCHEMA_V2:
+            raise ProxyExperimentError("structured provider result fields differ from schema")
+        body = {key: item for key, item in value.items() if key != "result_digest"}
+        if value["result_digest"] != _digest(body):
+            raise ProxyExperimentError("structured provider result digest mismatch")
+        fixed = {
+            "intent_digest": self.intent["intent_digest"],
+            "call_id": request["call_id"],
+            "local_ordinal": request["local_ordinal"],
+            "global_ordinal": request["global_ordinal"],
+            "request_digest": request["request_digest"],
+        }
+        if any(value.get(key) != item for key, item in fixed.items()):
+            raise ProxyExperimentError("structured provider result is not bound to its request")
+        reserved = base._validate_timestamp(request["reserved_at_utc"], "reserved_at_utc")
+        started = base._validate_timestamp(value["started_at_utc"], "started_at_utc")
+        finished = base._validate_timestamp(value["finished_at_utc"], "finished_at_utc")
+        duration = value["duration_seconds"]
+        if (
+            not reserved <= started <= finished
+            or isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isfinite(float(duration))
+            or float(duration) < 0
+        ):
+            raise ProxyExperimentError("structured provider result timing is invalid")
+
+        evidence_files = value.get("evidence_files")
+        if not isinstance(evidence_files, dict) or set(evidence_files) != set(
+            AGY_EVIDENCE_FILENAMES
+        ):
+            raise ProxyExperimentError("structured provider evidence file map differs")
+        call_root = self.run_dir / "calls" / str(request["call_id"])
+        raw: dict[str, bytes] = {}
+        for label, filename in AGY_EVIDENCE_FILENAMES.items():
+            entry = evidence_files[label]
+            expected_path = f"calls/{request['call_id']}/{filename}"
+            if not isinstance(entry, dict) or set(entry) != {"path", "digest", "size_bytes"}:
+                raise ProxyExperimentError("structured provider evidence reference differs")
+            if entry.get("path") != expected_path:
+                raise ProxyExperimentError("structured provider evidence path is noncanonical")
+            relative = Path(str(entry["path"]))
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or relative.as_posix() != expected_path
+            ):
+                raise ProxyExperimentError("structured provider evidence path is unsafe")
+            path = self.run_dir / relative
+            try:
+                base._reject_symlink_ancestors(path)
+            except base.ExperimentError as exc:
+                raise ProxyExperimentError(
+                    "structured provider evidence path is symlinked"
+                ) from exc
+            size = entry.get("size_bytes")
+            content, read_failure = live._read_bounded_regular_file(
+                path,
+                limit=AGY_EVIDENCE_LIMITS[label],
+                label=f"structured_{label}",
+            )
+            if (
+                read_failure is not None
+                or isinstance(size, bool)
+                or not isinstance(size, int)
+                or size < 0
+                or size > AGY_EVIDENCE_LIMITS[label]
+                or len(content) != size
+                or entry.get("digest") != _bytes_digest(content)
+            ):
+                raise ProxyExperimentError("structured provider evidence bytes differ")
+            raw[label] = content
+        allowed_files = {"request.json", "result.json", *AGY_EVIDENCE_FILENAMES.values()}
+        if call_root.is_dir() and {path.name for path in call_root.iterdir()} - allowed_files:
+            raise ProxyExperimentError("structured provider call directory has extra evidence")
+
+        evidence_summary = value.get("agy_evidence")
+        if not isinstance(evidence_summary, dict):
+            raise ProxyExperimentError("structured provider evidence summary is absent")
+        workdir_text = evidence_summary.get("invocation_workdir")
+        if not isinstance(workdir_text, str):
+            raise ProxyExperimentError("structured provider invocation workdir is absent")
+        workdir = Path(workdir_text)
+        expected_prefix = f"spade-coverage-forced-agy-{request['call_id']}-"
+        if not workdir.is_absolute() or not workdir.name.startswith(expected_prefix):
+            raise ProxyExperimentError("structured provider invocation workdir is noncanonical")
+        capture_failures = evidence_summary.get("capture_failures")
+        if not isinstance(capture_failures, list) or not all(
+            isinstance(item, str) and item for item in capture_failures
+        ):
+            raise ProxyExperimentError("structured provider capture failures are invalid")
+        if type(evidence_summary.get("timed_out")) is not bool:
+            raise ProxyExperimentError("structured provider timeout flag is invalid")
+        full_prompt = (
+            f"{request['system']}\n\n{request['prompt']}"
+            if request["system"]
+            else str(request["prompt"])
+        )
+        recomputed = live.analyze_agy_evidence(
+            requested_model=str(request["model"]),
+            full_prompt=full_prompt,
+            invocation_workdir=workdir,
+            exit_status=value["exit_status"],
+            timed_out=bool(evidence_summary["timed_out"]),
+            capture_failures=capture_failures,
+            stdout_ndjson=raw["stdout_ndjson"],
+            stderr=raw["stderr"],
+            log=raw["log"],
+            transcript=raw["transcript"],
+            sanitized_stream_receipt=True,
+            sanitized_stderr_receipt=True,
+            sanitized_log_receipt=True,
+            sanitized_transcript_receipt=True,
+        )
+        if evidence_summary != recomputed.summary():
+            raise ProxyExperimentError("structured provider evidence summary is not derivable")
+        expected = {
+            "response": ("success", None, recomputed.response, None),
+            "tool_policy_no_action": (
+                "model_behavior",
+                "tool_policy_no_action",
+                None,
+                recomputed.error,
+            ),
+            "pre_response_provider_failure": (
+                "error",
+                "pre_response_provider_failure",
+                None,
+                recomputed.error,
+            ),
+            "ambiguous_provider_disposition": (
+                "error",
+                "ambiguous_provider_disposition",
+                None,
+                recomputed.error,
+            ),
+            "evidence_integrity_failure": (
+                "error",
+                "evidence_integrity_failure",
+                None,
+                recomputed.error,
+            ),
+            "fatal_transport": ("error", "fatal_transport", None, recomputed.error),
+        }.get(recomputed.disposition)
+        if expected is None:
+            raise ProxyExperimentError("structured provider disposition is unknown")
+        expected_status, expected_category, expected_response, expected_error = expected
+        if (
+            value.get("provider_disposition") != recomputed.disposition
+            or value.get("status") != expected_status
+            or value.get("failure_category") != expected_category
+            or value.get("response") != expected_response
+            or value.get("error") != expected_error
+            or value.get("exception_type") is not None
+            or value.get("exit_status") != recomputed.exit_status
+        ):
+            raise ProxyExperimentError("structured provider result contradicts raw evidence")
+        expected_response_digest = (
+            _digest(expected_response) if expected_response is not None else None
+        )
+        if value.get("response_digest") != expected_response_digest:
+            raise ProxyExperimentError("structured provider response digest differs")
+        return value
+
     def _ledger_entry(self, request: Mapping[str, Any]) -> dict[str, Any]:
         body = {
             "schema_version": LEDGER_ENTRY_SCHEMA,
@@ -1246,7 +1502,7 @@ class _Engine:
         purpose: Mapping[str, Any],
         prompt: str,
         system: str = "",
-    ) -> tuple[str, str]:
+    ) -> tuple[_ModelCallOutput, str]:
         phase = str(purpose.get("phase"))
         model = self._model_for_phase(phase)
         call_id = base._call_id(purpose)
@@ -1269,7 +1525,9 @@ class _Engine:
             result = self._validate_call_result(base._read_json(result_path), request)
             if result["status"] == "error":
                 raise _RecordedCallFailure(call_id, result["failure_category"], result["error"])
-            return str(result["response"]), call_id
+            if result["status"] == "model_behavior":
+                return _ModelCallOutput("", "tool_policy_no_action"), call_id
+            return _ModelCallOutput(str(result["response"]), "response"), call_id
         if self.call_count >= NEW_CALL_CAP:
             raise CallCapExceeded("sealed new-call cap 208 reached")
         local_ordinal = self.call_count + 1
@@ -1280,7 +1538,7 @@ class _Engine:
         self._verify_provider_executable()
         self._validate_tree()
         request_body = {
-            "schema_version": CALL_REQUEST_SCHEMA,
+            "schema_version": CALL_REQUEST_SCHEMA_V2,
             "intent_digest": self.intent["intent_digest"],
             "actor_plan_digest": self._actor_plan_digest(required=phase == "actor"),
             "call_id": call_id,
@@ -1299,6 +1557,11 @@ class _Engine:
             "system_digest": _digest(system),
             "timeout_seconds": float(self.config["llm_timeout_seconds"]),
             "workdir_policy": "fresh-temporary-directory-per-call",
+            "output_format": live.AGY_OUTPUT_FORMAT,
+            "log_policy": live.AGY_LOG_POLICY,
+            "evidence_policy": (
+                "bounded-sanitized-stream-stderr-log-transcript-receipts-with-exact-digests"
+            ),
             "reservation_status": "reserved-before-spawn",
             "reserved_at_utc": base._utc_now(),
         }
@@ -1309,21 +1572,140 @@ class _Engine:
         base._write_json(ledger_path, self._ledger_entry(request))
         started_at = base._utc_now()
         started_clock = time.monotonic()
+        structured_call = getattr(self.dependencies, "structured_llm_call", None)
         try:
-            with tempfile.TemporaryDirectory(prefix="spade-coverage-forced-agy-") as workdir:
-                response = await self.dependencies.llm_call(
-                    self.dependencies.client_or_bin,
-                    model,
-                    prompt,
-                    system=system,
-                    provider="agy",
-                    workdir=Path(workdir),
-                    timeout_seconds=float(self.config["llm_timeout_seconds"]),
-                )
-            if not isinstance(response, str) or not response.strip():
-                raise live.LiveEvalError("agy returned an empty response", 4)
-            response = response.strip()
+            if structured_call is None:
+                with tempfile.TemporaryDirectory(
+                    prefix=f"spade-coverage-forced-agy-{_safe_id(call_id, 'call_id')}-"
+                ) as workdir:
+                    response = await self.dependencies.llm_call(
+                        self.dependencies.client_or_bin,
+                        model,
+                        prompt,
+                        system=system,
+                        provider="agy",
+                        workdir=Path(workdir),
+                        timeout_seconds=float(self.config["llm_timeout_seconds"]),
+                    )
+                if not isinstance(response, str) or not response.strip():
+                    raise live.LiveEvalError("agy returned an empty response", 4)
+                response = response.strip()
+            else:
+                safe_call_id = _safe_id(call_id, "call_id")
+                with tempfile.TemporaryDirectory(
+                    prefix=f"spade-coverage-forced-agy-{safe_call_id}-"
+                ) as workdir:
+                    workdir_path = Path(workdir).resolve(strict=True)
+                    evidence = await structured_call(
+                        self.dependencies.client_or_bin,
+                        model,
+                        prompt,
+                        system=system,
+                        provider="agy",
+                        workdir=workdir_path,
+                        timeout_seconds=float(self.config["llm_timeout_seconds"]),
+                        evidence_log_path=workdir_path / "agy-cli.log",
+                    )
+                if not isinstance(evidence, live.AgyCallEvidence):
+                    raise ProxyExperimentError(
+                        "structured LLM boundary returned an invalid receipt"
+                    )
+                evidence_payloads = {
+                    "stdout_ndjson": evidence.stdout_ndjson,
+                    "stderr": evidence.stderr,
+                    "log": evidence.log,
+                    "transcript": evidence.transcript,
+                }
+                if any(
+                    not isinstance(content, bytes) or len(content) > AGY_EVIDENCE_LIMITS[label]
+                    for label, content in evidence_payloads.items()
+                ):
+                    raise ProxyExperimentError(
+                        "structured LLM boundary returned oversized or non-byte evidence"
+                    )
+                evidence_files: dict[str, dict[str, Any]] = {}
+                for label, filename in AGY_EVIDENCE_FILENAMES.items():
+                    content = evidence_payloads[label]
+                    path = directory / filename
+                    base._write_immutable_bytes(path, content)
+                    evidence_files[label] = {
+                        "path": path.relative_to(self.run_dir).as_posix(),
+                        "digest": _bytes_digest(content),
+                        "size_bytes": len(content),
+                    }
+                disposition_fields = {
+                    "response": ("success", None, evidence.response, None),
+                    "tool_policy_no_action": (
+                        "model_behavior",
+                        "tool_policy_no_action",
+                        None,
+                        evidence.error,
+                    ),
+                    "pre_response_provider_failure": (
+                        "error",
+                        "pre_response_provider_failure",
+                        None,
+                        evidence.error,
+                    ),
+                    "ambiguous_provider_disposition": (
+                        "error",
+                        "ambiguous_provider_disposition",
+                        None,
+                        evidence.error,
+                    ),
+                    "evidence_integrity_failure": (
+                        "error",
+                        "evidence_integrity_failure",
+                        None,
+                        evidence.error,
+                    ),
+                    "fatal_transport": ("error", "fatal_transport", None, evidence.error),
+                }.get(evidence.disposition)
+                if disposition_fields is None:
+                    raise ProxyExperimentError(
+                        "structured LLM boundary returned unknown disposition"
+                    )
+                status, failure_category, structured_response, structured_error = disposition_fields
+                result_body = {
+                    "schema_version": CALL_RESULT_SCHEMA_V2,
+                    "intent_digest": self.intent["intent_digest"],
+                    "call_id": call_id,
+                    "local_ordinal": local_ordinal,
+                    "global_ordinal": global_ordinal,
+                    "request_digest": request["request_digest"],
+                    "status": status,
+                    "failure_category": failure_category,
+                    "provider_disposition": evidence.disposition,
+                    "exception_type": None,
+                    "error": structured_error,
+                    "exit_status": evidence.exit_status,
+                    "response": structured_response,
+                    "response_digest": (
+                        _digest(structured_response) if structured_response is not None else None
+                    ),
+                    "agy_evidence": evidence.summary(),
+                    "evidence_files": evidence_files,
+                    "started_at_utc": started_at,
+                    "finished_at_utc": base._utc_now(),
+                    "duration_seconds": time.monotonic() - started_clock,
+                }
+                result = {**result_body, "result_digest": _digest(result_body)}
+                self._validate_call_result(result, request)
+                base._write_json(result_path, result)
+                if status == "error":
+                    raise _RecordedCallFailure(
+                        call_id, str(failure_category), str(structured_error)
+                    )
+                if status == "model_behavior":
+                    return _ModelCallOutput("", "tool_policy_no_action"), call_id
+                return _ModelCallOutput(str(structured_response), "response"), call_id
         except Exception as exc:
+            if result_path.is_file():
+                raise
+            if structured_call is not None:
+                raise AmbiguousProviderCall(
+                    f"structured call {call_id} failed before a durable disposition: {exc}"
+                ) from exc
             error = str(exc) or type(exc).__name__
             match = re.fullmatch(r"agy failed with exit (-?[0-9]+):.*", error, re.DOTALL)
             result_body = {
@@ -1371,7 +1753,7 @@ class _Engine:
         result = {**result_body, "result_digest": _digest(result_body)}
         self._validate_call_result(result, request)
         base._write_json(result_path, result)
-        return response, call_id
+        return _ModelCallOutput(response, "response"), call_id
 
     def _candidate_path(self, candidate_id: str) -> Path:
         return (
@@ -1936,7 +2318,12 @@ class _Engine:
             base._read_json(request_path.parent / "result.json"), request
         )
         if result["status"] == "error":
-            if result["failure_category"] not in {"empty_response", "provider_timeout"}:
+            allowed_retry_categories = (
+                {"pre_response_provider_failure"}
+                if request["schema_version"] == CALL_REQUEST_SCHEMA_V2
+                else {"empty_response", "provider_timeout"}
+            )
+            if result["failure_category"] not in allowed_retry_categories:
                 raise ProxyExperimentError("fatal design transport cannot open an attempt leaf")
             expected = {
                 "status": "retryable_transport",
@@ -1952,6 +2339,21 @@ class _Engine:
                 "qualification_preview": None,
                 "scientific_preview": None,
                 "feedback_for_next_attempt": "\nThe provider attempt failed; return complete source.",
+            }
+        elif result["status"] == "model_behavior":
+            expected = {
+                "status": "tool_policy_no_action",
+                "reason": f"{value['call_id']}: tool_policy_no_action",
+                "code": None,
+                "code_digest": None,
+                "source_character_count": None,
+                "source_nonblank_line_count": None,
+                "qualification_preview": None,
+                "scientific_preview": None,
+                "feedback_for_next_attempt": (
+                    "\nThe prior response selected a denied tool and supplied no source; "
+                    "return complete source without tools."
+                ),
             }
         else:
             expected = self._assess_design_response(
@@ -2028,7 +2430,12 @@ class _Engine:
         )
         retry_feedback = "\nThe prior hint was unusable. Return only general strategy and no exact answer values."
         if result["status"] == "error":
-            if result["failure_category"] not in {"empty_response", "provider_timeout"}:
+            allowed_retry_categories = (
+                {"pre_response_provider_failure"}
+                if request["schema_version"] == CALL_REQUEST_SCHEMA_V2
+                else {"empty_response", "provider_timeout"}
+            )
+            if result["failure_category"] not in allowed_retry_categories:
                 raise ProxyExperimentError("fatal hint transport cannot open an attempt leaf")
             expected = {
                 "status": "retryable_transport",
@@ -2037,6 +2444,14 @@ class _Engine:
                         str(value["call_id"]), str(result["failure_category"]), str(result["error"])
                     )
                 ),
+                "hint": None,
+                "hint_digest": None,
+                "feedback_for_next_attempt": retry_feedback,
+            }
+        elif result["status"] == "model_behavior":
+            expected = {
+                "status": "tool_policy_no_action",
+                "reason": f"{value['call_id']}: tool_policy_no_action",
                 "hint": None,
                 "hint_digest": None,
                 "feedback_for_next_attempt": retry_feedback,
@@ -2087,12 +2502,28 @@ class _Engine:
                 "attempt": attempt,
             }
             try:
-                raw, call_id = await self.call(
+                output, call_id = await self.call(
                     purpose=purpose,
                     prompt=prompt,
                     system="Return secure, deterministic environment source code only.",
                 )
-                assessment = self._assess_design_response(raw, candidate_id, stratum_id)
+                if output.disposition == "tool_policy_no_action":
+                    assessment = {
+                        "status": "tool_policy_no_action",
+                        "reason": f"{call_id}: tool_policy_no_action",
+                        "code": None,
+                        "code_digest": None,
+                        "source_character_count": None,
+                        "source_nonblank_line_count": None,
+                        "qualification_preview": None,
+                        "scientific_preview": None,
+                        "feedback_for_next_attempt": (
+                            "\nThe prior response selected a denied tool and supplied no source; "
+                            "return complete source without tools."
+                        ),
+                    }
+                else:
+                    assessment = self._assess_design_response(output.text, candidate_id, stratum_id)
             except _RecordedCallFailure as exc:
                 if not exc.retryable:
                     raise ProxyExperimentIncomplete(f"fatal challenger transport: {exc}") from exc
@@ -2163,14 +2594,22 @@ class _Engine:
                 "attempt": attempt,
             }
             try:
-                hint, call_id = await self.call(
+                output, call_id = await self.call(
                     purpose=purpose,
                     prompt=prompt,
                     system="Provide strategy only; never solve the puzzle for the player.",
                 )
-                leaked = live.hint_reveals_solution(hint, solution, observation)
-                status = "leaked" if leaked else "accepted"
-                reason = "exact solution leakage" if leaked else "nonleaking"
+                if output.disposition == "tool_policy_no_action":
+                    hint, status, reason = (
+                        None,
+                        "tool_policy_no_action",
+                        (f"{call_id}: tool_policy_no_action"),
+                    )
+                else:
+                    hint = output.text
+                    leaked = live.hint_reveals_solution(hint, solution, observation)
+                    status = "leaked" if leaked else "accepted"
+                    reason = "exact solution leakage" if leaked else "nonleaking"
             except _RecordedCallFailure as exc:
                 if not exc.retryable:
                     raise ProxyExperimentIncomplete(f"fatal hint transport: {exc}") from exc
@@ -3136,14 +3575,7 @@ class _Engine:
             "portfolio_quality_diagnostics": portfolio_quality_diagnostics(locks),
             "pair_schedule": list(schedule),
             "pair_schedule_digest": _digest(schedule),
-            "attempt_policy": {
-                "whole_pair_retries": True,
-                "waves_1_and_2": "all-unresolved",
-                "wave_3": "only-if-unresolved-after-wave-2-at-most-14",
-                "retryable_failure_categories": ["empty_response", "provider_timeout"],
-                "nonempty_parser_misses_are_zero_reward_and_not_retried": True,
-                "environment_runtime_integrity_failures_are_fatal": True,
-            },
+            "attempt_policy": dict(STRUCTURED_ACTOR_ATTEMPT_POLICY),
             "actor_call_ceiling": ACTOR_CALL_CEILING,
             "success_rule": "reward-positive-even-if-simultaneously-truncated",
             "analysis_gates": self.intent["analysis_gates"],
@@ -3315,14 +3747,15 @@ def validate_actor_plan(
         raise ProxyExperimentError("coverage/redundant portfolios must differ in all six strata")
     if value["analysis_gates"] != intent["analysis_gates"]:
         raise ProxyExperimentError("actor plan analysis gates differ from intent")
-    if value["attempt_policy"] != {
-        "whole_pair_retries": True,
-        "waves_1_and_2": "all-unresolved",
-        "wave_3": "only-if-unresolved-after-wave-2-at-most-14",
-        "retryable_failure_categories": ["empty_response", "provider_timeout"],
-        "nonempty_parser_misses_are_zero_reward_and_not_retried": True,
-        "environment_runtime_integrity_failures_are_fatal": True,
-    }:
+    legacy_policy_is_exact_historical_evidence = (
+        value["attempt_policy"] == LEGACY_ACTOR_ATTEMPT_POLICY
+        and value["intent_digest"] == LEGACY_INTENT_DIGEST
+        and value["actor_plan_digest"] == LEGACY_ACTOR_PLAN_DIGEST
+    )
+    if (
+        value["attempt_policy"] != STRUCTURED_ACTOR_ATTEMPT_POLICY
+        and not legacy_policy_is_exact_historical_evidence
+    ):
         raise ProxyExperimentError("actor attempt policy differs")
     if value["analysis_interpretation"] != (
         "quality-matched coverage-forced portfolio-swap association; exact 3!^6 "
@@ -3662,10 +4095,13 @@ class _ActorEngine(_Engine):
                     "actor call is outside the exact artifact resume frontier"
                 )
             result = actor_results[call_id]
-            if result["status"] == "error" and result["failure_category"] not in {
-                "empty_response",
-                "provider_timeout",
-            }:
+            retryable_categories = set(
+                self.actor_plan["attempt_policy"]["retryable_failure_categories"]
+            )
+            if (
+                result["status"] == "error"
+                and result["failure_category"] not in retryable_categories
+            ):
                 raise ProxyExperimentIncomplete("fatal actor transport cannot be resumed")
         if any(request["purpose"]["phase"] == "actor" for request in requests):
             self._validate_actor_wave_eligibility(schedule)
@@ -3734,7 +4170,7 @@ class _ActorEngine(_Engine):
         attempt: int,
         arm: str,
     ) -> Mapping[str, Any]:
-        required = {
+        legacy_required = {
             "schema_version",
             "intent_digest",
             "actor_plan_digest",
@@ -3761,7 +4197,14 @@ class _ActorEngine(_Engine):
             "success_rule",
             "arm_digest",
         }
-        if set(value) != required or value.get("schema_version") != "spade-coverage-forced-arm/v1":
+        schema = value.get("schema_version")
+        if schema == "spade-coverage-forced-arm/v1" and set(value) == legacy_required:
+            model_disposition = "response"
+        elif schema == ARM_SCHEMA_V2 and set(value) == legacy_required | {"model_disposition"}:
+            model_disposition = value.get("model_disposition")
+            if model_disposition not in {"response", "tool_policy_no_action"}:
+                raise ProxyExperimentError("actor model disposition is invalid")
+        else:
             raise ProxyExperimentError("actor arm fields differ from schema")
         _sealed_artifact(value, "arm_digest")
         expected = {
@@ -3779,7 +4222,12 @@ class _ActorEngine(_Engine):
         if any(value.get(key) != item for key, item in expected.items()):
             raise ProxyExperimentError("actor arm identity differs")
         raw = value["raw_response"]
-        if not isinstance(raw, str) or not raw or value["raw_response_digest"] != _digest(raw):
+        if (
+            not isinstance(raw, str)
+            or (model_disposition == "response" and not raw)
+            or (model_disposition == "tool_policy_no_action" and raw != "")
+            or value["raw_response_digest"] != _digest(raw)
+        ):
             raise ProxyExperimentError("actor response digest differs")
         parser_miss = live.extract_boxed_answer(raw) is None
         if value["parser_miss"] is not parser_miss or value[
@@ -3834,8 +4282,16 @@ class _ActorEngine(_Engine):
         result = self._validate_call_result(
             base._read_json(request_path.parent / "result.json"), request
         )
-        if result["status"] != "success" or result["response"] != raw:
-            raise ProxyExperimentError("actor arm does not link a successful provider result")
+        if model_disposition == "response":
+            linked = result["status"] == "success" and result["response"] == raw
+        else:
+            linked = (
+                result["status"] == "model_behavior"
+                and result["failure_category"] == "tool_policy_no_action"
+                and result["response"] is None
+            )
+        if not linked:
+            raise ProxyExperimentError("actor arm does not link its provider disposition")
         try:
             target = self._proofpack_call(
                 self.dependencies.target_factory,
@@ -3924,7 +4380,10 @@ class _ActorEngine(_Engine):
                 if item.get("arm_digest") != leaf["arm_digest"]:
                     raise ProxyExperimentError("pair attempt arm reference differs")
         elif status == "retryable_failure":
-            if value.get("failure_category") not in {"empty_response", "provider_timeout"}:
+            retryable_categories = set(
+                self.actor_plan["attempt_policy"]["retryable_failure_categories"]
+            )
+            if value.get("failure_category") not in retryable_categories:
                 raise ProxyExperimentError("pair retry uses a nonretryable failure")
             if not isinstance(value.get("failed_call_id"), str):
                 raise ProxyExperimentError("pair retry lacks a failed call")
@@ -4017,7 +4476,7 @@ class _ActorEngine(_Engine):
                 "horizon": 1,
             }
             try:
-                raw, call_id = await self.call(purpose=purpose, prompt=prompt)
+                output, call_id = await self.call(purpose=purpose, prompt=prompt)
             except _RecordedCallFailure as exc:
                 if not exc.retryable:
                     raise ProxyExperimentIncomplete(f"fatal actor transport: {exc}") from exc
@@ -4036,6 +4495,7 @@ class _ActorEngine(_Engine):
                 value = {**body, "attempt_digest": _digest(body)}
                 base._write_json(attempt_path, value)
                 return self._validate_attempt(value, pair, attempt)
+            raw = output.text
             if arm_path.is_file():
                 arm_leaf = self._validate_arm(
                     base._read_json(arm_path), pair=pair, attempt=attempt, arm=str(arm)
@@ -4071,7 +4531,7 @@ class _ActorEngine(_Engine):
                         f"fatal actor environment/integrity failure for {pair['pair_id']}/{arm}: {exc}"
                     ) from exc
                 arm_body = {
-                    "schema_version": "spade-coverage-forced-arm/v1",
+                    "schema_version": ARM_SCHEMA_V2,
                     "intent_digest": self.intent["intent_digest"],
                     "actor_plan_digest": self.actor_plan["actor_plan_digest"],
                     "pair_id": pair["pair_id"],
@@ -4082,6 +4542,7 @@ class _ActorEngine(_Engine):
                     "seed": pair["seed"],
                     "arm": arm,
                     "call_id": call_id,
+                    "model_disposition": output.disposition,
                     "raw_response": raw,
                     "raw_response_digest": _digest(raw),
                     "parser_miss": live.extract_boxed_answer(raw) is None,

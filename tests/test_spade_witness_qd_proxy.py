@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ def _engine(tmp_path: Path) -> pilot._Engine:
 
     intent = {
         "intent_digest": _sha(1),
+        "output_root": str(tmp_path),
         "shared_ledger_root": str(tmp_path / "ledger"),
         "runtime_identity": {"agy_executable_digest": _sha(2)},
         "configuration": {
@@ -81,6 +83,224 @@ def _request(
     return {**body, "request_digest": pilot._digest(body)}
 
 
+def _structured_request(engine: pilot._Engine, **kwargs) -> dict:
+    legacy = _request(engine, **kwargs)
+    body = {key: value for key, value in legacy.items() if key != "request_digest"}
+    body.update(
+        {
+            "schema_version": pilot.CALL_REQUEST_SCHEMA_V2,
+            "output_format": pilot.live.AGY_OUTPUT_FORMAT,
+            "log_policy": pilot.live.AGY_LOG_POLICY,
+            "evidence_policy": (
+                "bounded-sanitized-stream-stderr-log-transcript-receipts-with-exact-digests"
+            ),
+        }
+    )
+    return {**body, "request_digest": pilot._digest(body)}
+
+
+def _ndjson(*events: dict) -> bytes:
+    return b"".join(
+        json.dumps(event, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        for event in events
+    )
+
+
+def _agy_evidence_for_request(
+    request: dict,
+    *,
+    disposition: str = "response",
+    response: str = r"\boxed{ok}",
+    workdir: Path,
+) -> pilot.live.AgyCallEvidence:
+    conversation_id = "12345678-1234-4234-9234-123456789abc"
+    tool = "RunCommand" if disposition == "tool_policy_no_action" else None
+    stream = [
+        {
+            "event": "init",
+            "conversation_id": conversation_id,
+            "init": {
+                "model": request["model"],
+                "cwd": str(workdir),
+                "tools": ["RunCommand"],
+                "permission_mode": "request-review",
+            },
+        }
+    ]
+    if tool:
+        stream.append(
+            {
+                "event": "step_update",
+                "conversation_id": conversation_id,
+                "step_update": {
+                    "conversation_id": conversation_id,
+                    "step_index": 1,
+                    "state": "DONE",
+                    "step_type": "tool",
+                    "tool_name": tool,
+                    "tool_info": {"name": tool, "parameters": {"secret": "do-not-persist"}},
+                },
+            }
+        )
+    terminal_response = "" if disposition == "ambiguous_provider_disposition" else response
+    stream.append(
+        {
+            "event": "result",
+            "conversation_id": conversation_id,
+            "result": {
+                "conversation_id": conversation_id,
+                "status": "SUCCESS",
+                "response": terminal_response,
+                "duration_seconds": 1.0,
+                "num_turns": 1,
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "thinking_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "total_tokens": 2,
+                },
+            },
+        }
+    )
+    full_prompt = (
+        f"{request['system']}\n\n{request['prompt']}" if request["system"] else request["prompt"]
+    )
+    transcript = [
+        {
+            "step_index": 0,
+            "source": "USER_EXPLICIT",
+            "type": "USER_INPUT",
+            "status": "DONE",
+            "content": f"<USER_REQUEST>\n{full_prompt}\n</USER_REQUEST>",
+        }
+    ]
+    if tool:
+        transcript.append(
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "tool_calls": [{"name": tool, "args": {}}],
+            }
+        )
+    elif terminal_response:
+        transcript.append(
+            {
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "content": terminal_response,
+            }
+        )
+    gemini_dir = Path(workdir) / ".agy-gemini-00000000000000000000000000000000"
+    log = (
+        f"CLI app data directory: {gemini_dir / 'antigravity-cli'}\n"
+        "applyUserSettings: no shared config permissions from "
+        f"{gemini_dir / 'config' / 'config.json'}\n"
+        f"Creating CLI server backend: product=antigravity workspaceDirs=[{workdir}]\n"
+        f'Print mode: starting (promptLength=1, model="{request["model"]}", '
+        'conversationID="")\n'
+        f"Created conversation {conversation_id}\n"
+        "ResponseID: response-id-1\n"
+        + (
+            f'Print mode: soft-denying tool confirmation "{tool}" at step 2\n'
+            f"Tool confirmation for conversation {conversation_id} step 2 "
+            "(type=tool approved=false)\n"
+            if tool
+            else ""
+        )
+    ).encode()
+    return pilot.live.analyze_agy_evidence(
+        requested_model=request["model"],
+        full_prompt=full_prompt,
+        invocation_workdir=workdir,
+        exit_status=0,
+        timed_out=False,
+        capture_failures=(),
+        stdout_ndjson=_ndjson(*stream),
+        stderr=b"",
+        log=log,
+        transcript=_ndjson(*transcript),
+        policy_config_identity={
+            "relative_path": "config/config.json",
+            "exists": False,
+            "digest": None,
+            "size_bytes": 0,
+        },
+    )
+
+
+def _structured_result(
+    engine: pilot._Engine,
+    request: dict,
+    *,
+    disposition: str = "response",
+) -> dict:
+    workdir = Path(f"/private/tmp/spade-coverage-forced-agy-{request['call_id']}-fixture")
+    evidence = _agy_evidence_for_request(
+        request,
+        disposition=disposition,
+        workdir=workdir,
+    )
+    call_dir = engine.run_dir / "calls" / request["call_id"]
+    payloads = {
+        "stdout_ndjson": evidence.stdout_ndjson,
+        "stderr": evidence.stderr,
+        "log": evidence.log,
+        "transcript": evidence.transcript,
+    }
+    files = {}
+    for label, filename in pilot.AGY_EVIDENCE_FILENAMES.items():
+        path = call_dir / filename
+        pilot.base._write_immutable_bytes(path, payloads[label])
+        files[label] = {
+            "path": path.relative_to(engine.run_dir).as_posix(),
+            "digest": pilot._bytes_digest(payloads[label]),
+            "size_bytes": len(payloads[label]),
+        }
+    status_by_disposition = {
+        "response": ("success", None, evidence.response, None),
+        "tool_policy_no_action": (
+            "model_behavior",
+            "tool_policy_no_action",
+            None,
+            evidence.error,
+        ),
+        "ambiguous_provider_disposition": (
+            "error",
+            "ambiguous_provider_disposition",
+            None,
+            evidence.error,
+        ),
+    }
+    status, category, selected_response, error = status_by_disposition[disposition]
+    body = {
+        "schema_version": pilot.CALL_RESULT_SCHEMA_V2,
+        "intent_digest": engine.intent["intent_digest"],
+        "call_id": request["call_id"],
+        "local_ordinal": request["local_ordinal"],
+        "global_ordinal": request["global_ordinal"],
+        "request_digest": request["request_digest"],
+        "status": status,
+        "failure_category": category,
+        "provider_disposition": disposition,
+        "exception_type": None,
+        "error": error,
+        "exit_status": evidence.exit_status,
+        "response": selected_response,
+        "response_digest": pilot._digest(selected_response) if selected_response else None,
+        "agy_evidence": evidence.summary(),
+        "evidence_files": files,
+        "started_at_utc": request["reserved_at_utc"],
+        "finished_at_utc": request["reserved_at_utc"],
+        "duration_seconds": 0.0,
+    }
+    return {**body, "result_digest": pilot._digest(body)}
+
+
 def test_preactor_request_remains_valid_after_actor_plan_seal(tmp_path: Path) -> None:
     engine = _engine(tmp_path)
     request = _request(engine)
@@ -105,6 +325,222 @@ def test_ambiguous_request_is_never_replayed(tmp_path: Path) -> None:
                 system=request["system"],
             )
         )
+
+
+def test_structured_call_artifacts_recompute_tool_disposition_and_reject_tamper(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    request = _structured_request(engine)
+    result = _structured_result(engine, request, disposition="tool_policy_no_action")
+    assert engine._validate_call_result(result, request)["status"] == "model_behavior"
+    assert result["failure_category"] == "tool_policy_no_action"
+
+    transcript_entry = result["evidence_files"]["transcript"]
+    transcript_path = engine.run_dir / transcript_entry["path"]
+    transcript_path.write_bytes(transcript_path.read_bytes() + b"{}\n")
+    with pytest.raises(pilot.ProxyExperimentError, match="evidence bytes differ"):
+        engine._validate_call_result(result, request)
+
+
+def test_structured_call_rejects_noncanonical_path_symlink_size_and_route(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    request = _structured_request(engine)
+
+    bad_path = _structured_result(engine, request)
+    bad_path["evidence_files"]["stderr"]["path"] = "../stderr"
+    bad_path_body = {key: value for key, value in bad_path.items() if key != "result_digest"}
+    bad_path["result_digest"] = pilot._digest(bad_path_body)
+    with pytest.raises(pilot.ProxyExperimentError, match="noncanonical"):
+        engine._validate_call_result(bad_path, request)
+
+    engine = _engine(tmp_path / "symlink")
+    request = _structured_request(engine)
+    symlinked = _structured_result(engine, request)
+    stderr_entry = symlinked["evidence_files"]["stderr"]
+    stderr_path = engine.run_dir / stderr_entry["path"]
+    stderr_path.unlink()
+    target = tmp_path / "outside-stderr"
+    target.write_bytes(b"")
+    stderr_path.symlink_to(target)
+    with pytest.raises(pilot.ProxyExperimentError, match="symlink"):
+        engine._validate_call_result(symlinked, request)
+
+    engine = _engine(tmp_path / "size")
+    request = _structured_request(engine)
+    oversized = _structured_result(engine, request)
+    oversized["evidence_files"]["log"]["size_bytes"] = pilot.live.MAX_AGY_LOG_BYTES + 1
+    oversized_body = {key: value for key, value in oversized.items() if key != "result_digest"}
+    oversized["result_digest"] = pilot._digest(oversized_body)
+    with pytest.raises(pilot.ProxyExperimentError, match="evidence bytes differ"):
+        engine._validate_call_result(oversized, request)
+
+    engine = _engine(tmp_path / "route")
+    request = _structured_request(engine)
+    route = _structured_result(engine, request)
+    stdout_entry = route["evidence_files"]["stdout_ndjson"]
+    stdout_path = engine.run_dir / stdout_entry["path"]
+    receipt = json.loads(stdout_path.read_text())
+    receipt["events"][0]["init"]["model"] = "gemini-wrong-route"
+    body = {key: value for key, value in receipt.items() if key != "receipt_digest"}
+    receipt["receipt_digest"] = pilot.live._canonical_json_digest(body)
+    changed = pilot.live._canonical_json_bytes(receipt)
+    stdout_path.write_bytes(changed)
+    stdout_entry["digest"] = pilot._bytes_digest(changed)
+    stdout_entry["size_bytes"] = len(changed)
+    route_body = {key: value for key, value in route.items() if key != "result_digest"}
+    route["result_digest"] = pilot._digest(route_body)
+    with pytest.raises(pilot.ProxyExperimentError, match="summary is not derivable"):
+        engine._validate_call_result(route, request)
+
+
+def test_structured_unknown_blank_is_fatal_not_retryable(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    request = _structured_request(engine)
+    result = _structured_result(engine, request, disposition="ambiguous_provider_disposition")
+    validated = engine._validate_call_result(result, request)
+    failure = pilot._RecordedCallFailure(
+        request["call_id"],
+        str(validated["failure_category"]),
+        str(validated["error"]),
+    )
+    assert failure.retryable is False
+
+
+def test_structured_engine_tool_is_terminal_and_only_pre_response_failure_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pilot, "_validate_runtime_identity", lambda _value: None)
+    purpose = {
+        "phase": "challenger-design",
+        "stratum_id": "c001",
+        "candidate_id": "c001--challenger",
+        "attempt": 1,
+    }
+
+    def ready_engine(name: str, disposition: str) -> pilot._Engine:
+        engine = _engine(tmp_path / name)
+        engine.run_dir.mkdir(parents=True)
+        engine.ledger_root.mkdir(parents=True)
+        engine._verify_provider_executable = lambda: None  # type: ignore[method-assign]
+        engine._validate_tree = lambda: None  # type: ignore[method-assign]
+
+        async def structured(
+            _client,
+            model,
+            prompt,
+            *,
+            system,
+            workdir,
+            **_kwargs,
+        ):
+            request = {"model": model, "prompt": prompt, "system": system}
+            if disposition == "pre_response_provider_failure":
+                return pilot.live.analyze_agy_evidence(
+                    requested_model=model,
+                    full_prompt=f"{system}\n\n{prompt}" if system else prompt,
+                    invocation_workdir=workdir,
+                    exit_status=1,
+                    timed_out=False,
+                    capture_failures=(),
+                    stdout_ndjson=b"",
+                    stderr=b"HTTP status 429: provider temporarily unavailable\n",
+                    log=b"",
+                    transcript=b"",
+                    policy_config_identity={
+                        "relative_path": "config/config.json",
+                        "exists": False,
+                        "digest": None,
+                        "size_bytes": 0,
+                    },
+                )
+            return _agy_evidence_for_request(
+                request,
+                disposition=disposition,
+                workdir=workdir,
+            )
+
+        engine.dependencies.structured_llm_call = structured
+        return engine
+
+    tool_engine = ready_engine("tool", "tool_policy_no_action")
+    output, _call_id = asyncio.run(
+        tool_engine.call(purpose=purpose, prompt="sealed", system="system")
+    )
+    assert output == pilot._ModelCallOutput("", "tool_policy_no_action")
+    result_paths = list((tool_engine.run_dir / "calls").glob("*/result.json"))
+    assert len(result_paths) == 1
+    assert pilot.base._read_json(result_paths[0])["status"] == "model_behavior"
+
+    retry_engine = ready_engine("retry", "pre_response_provider_failure")
+    with pytest.raises(pilot._RecordedCallFailure) as retry:
+        asyncio.run(retry_engine.call(purpose=purpose, prompt="sealed", system="system"))
+    assert retry.value.retryable is True
+
+    blank_engine = ready_engine("blank", "ambiguous_provider_disposition")
+    with pytest.raises(pilot._RecordedCallFailure) as blank:
+        asyncio.run(blank_engine.call(purpose=purpose, prompt="sealed", system="system"))
+    assert blank.value.retryable is False
+
+
+def test_actor_tool_policy_outcome_is_zero_and_does_not_retry(tmp_path: Path) -> None:
+    class Env:
+        def reset(self, seed=None):
+            return "observation", {}
+
+        def step(self, action):
+            assert action == r"\boxed{__spade_invalid_action_format__}"
+            return "format feedback", 0.0, False, False, {}
+
+    class Target:
+        def instantiate(self):
+            return Env()
+
+    actor = object.__new__(pilot._ActorEngine)
+    actor.run_dir = tmp_path
+    actor.intent = {"intent_digest": _sha(1)}
+    actor.actor_plan = {"actor_plan_digest": _sha(2)}
+    actor.config = {"qualification_timeout_seconds": 1.0}
+    actor.dependencies = SimpleNamespace(target_factory=lambda *_args, **_kwargs: Target())
+    actor._candidate_by_id = {
+        "c001--challenger": {
+            "candidate_id": "c001--challenger",
+            "code": "sealed",
+            "probes": {"0": {"observation": "observation"}},
+            "hints": {"0": {"hint": "strategy"}},
+        }
+    }
+    call_count = 0
+
+    async def tool_call(**_kwargs):
+        nonlocal call_count
+        call_count += 1
+        return pilot._ModelCallOutput("", "tool_policy_no_action"), f"call-{call_count}"
+
+    actor.call = tool_call
+    actor._proofpack_call = lambda operation, *args, **kwargs: operation(*args, **kwargs)
+    actor._validate_arm = lambda value, **_kwargs: value
+    actor._validate_attempt = lambda value, *_args: value
+    pair = {
+        "pair_id": "pair-001",
+        "pair_ordinal": 0,
+        "stratum_id": "c001",
+        "candidate_id": "c001--challenger",
+        "seed": 0,
+        "arm_order": ["unhinted", "hinted"],
+    }
+    attempt = asyncio.run(actor._run_pair_attempt(pair, 1))
+    assert attempt["status"] == "completed"
+    assert attempt["failure_category"] is None
+    assert call_count == 2
+    for reference in attempt["arms"]:
+        arm = pilot.base._read_json(tmp_path / reference["path"])
+        assert arm["model_disposition"] == "tool_policy_no_action"
+        assert arm["parser_miss"] is True
+        assert arm["binary_return"] == 0.0
 
 
 def test_total_208_cap_fails_before_provider_spawn(tmp_path: Path) -> None:
@@ -399,8 +835,10 @@ def _actor_plan_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
             "whole_pair_retries": True,
             "waves_1_and_2": "all-unresolved",
             "wave_3": "only-if-unresolved-after-wave-2-at-most-14",
-            "retryable_failure_categories": ["empty_response", "provider_timeout"],
+            "retryable_failure_categories": ["pre_response_provider_failure"],
+            "model_tool_calls_are_zero_reward_and_not_retried": True,
             "nonempty_parser_misses_are_zero_reward_and_not_retried": True,
+            "unknown_or_post_response_failures_are_fatal": True,
             "environment_runtime_integrity_failures_are_fatal": True,
         },
         "actor_call_ceiling": pilot.ACTOR_CALL_CEILING,
@@ -430,6 +868,74 @@ def test_actor_plan_recomputes_portfolios_from_candidate_evidence(
     tampered["actor_plan_digest"] = pilot._digest(body)
     with pytest.raises(pilot.ProxyExperimentError, match="portfolios differ"):
         pilot.validate_actor_plan(tampered, intent, run_dir=tmp_path)
+
+
+def test_actor_plan_and_retry_leaf_preserve_exact_legacy_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    intent, actor_plan = _actor_plan_fixture(tmp_path, monkeypatch)
+    legacy_plan = deepcopy(actor_plan)
+    legacy_plan["attempt_policy"] = deepcopy(pilot.LEGACY_ACTOR_ATTEMPT_POLICY)
+    body = {key: value for key, value in legacy_plan.items() if key != "actor_plan_digest"}
+    legacy_plan["actor_plan_digest"] = pilot._digest(body)
+    with pytest.raises(pilot.ProxyExperimentError, match="attempt policy"):
+        pilot.validate_actor_plan(legacy_plan, intent, run_dir=tmp_path)
+    monkeypatch.setattr(pilot, "LEGACY_INTENT_DIGEST", intent["intent_digest"])
+    monkeypatch.setattr(
+        pilot,
+        "LEGACY_ACTOR_PLAN_DIGEST",
+        legacy_plan["actor_plan_digest"],
+    )
+    assert pilot.validate_actor_plan(legacy_plan, intent, run_dir=tmp_path) == legacy_plan
+
+    pair = legacy_plan["pair_schedule"][0]
+    engine = object.__new__(pilot._ActorEngine)
+    engine.intent = {"intent_digest": intent["intent_digest"]}
+    engine.actor_plan = legacy_plan
+    engine.run_dir = tmp_path
+    engine._candidate_by_id = {
+        pair["candidate_id"]: {
+            "probes": {str(pair["seed"]): {"observation": "locked observation"}},
+            "hints": {str(pair["seed"]): {"hint": "locked strategy"}},
+        }
+    }
+    failed_arm = pair["arm_order"][0]
+    purpose = {
+        "phase": "actor",
+        "actor_plan_digest": legacy_plan["actor_plan_digest"],
+        "pair_id": pair["pair_id"],
+        "pair_ordinal": pair["pair_ordinal"],
+        "pair_attempt": 1,
+        "stratum_id": pair["stratum_id"],
+        "candidate_id": pair["candidate_id"],
+        "seed": pair["seed"],
+        "arm": failed_arm,
+        "turn": 1,
+        "horizon": 1,
+    }
+    call_id = pilot.base._call_id(purpose)
+    call_dir = tmp_path / "calls" / call_id
+    pilot.base._write_json(call_dir / "request.json", {"call_id": call_id})
+    pilot.base._write_json(call_dir / "result.json", {"call_id": call_id})
+    engine._validate_call_request = lambda value, _expected=None: value
+    engine._validate_call_result = lambda _value, _request: {
+        "status": "error",
+        "failure_category": "empty_response",
+    }
+    attempt_body = {
+        "schema_version": pilot.PAIR_ATTEMPT_SCHEMA,
+        "intent_digest": intent["intent_digest"],
+        "actor_plan_digest": legacy_plan["actor_plan_digest"],
+        "pair_id": pair["pair_id"],
+        "pair_ordinal": pair["pair_ordinal"],
+        "pair_attempt": 1,
+        "status": "retryable_failure",
+        "failure_category": "empty_response",
+        "failed_call_id": call_id,
+        "arms": [],
+    }
+    attempt = {**attempt_body, "attempt_digest": pilot._digest(attempt_body)}
+    assert engine._validate_attempt(attempt, pair, 1) == attempt
 
 
 def test_persisted_actor_reward_is_replayed_not_trusted(tmp_path: Path) -> None:

@@ -175,11 +175,16 @@ performance improved. The same evidence can now be ingested by a shadow-only, im
 ledger; that boundary records decisions but deliberately exposes no training selector or reward.
 
 The [quality-matched coverage-forced proxy](docs/counterfactual-witness.md#quality-matched-coverage-forced-proxy)
-is the next sealed experiment. It compares redundant historical portfolios with portfolios that
-force inclusion of a behaviorally distinct recovery-false challenger while matching CWA quality.
-Its result, if the preparation and outcome gates complete, is only an exploratory noncausal
-association over realized environment-and-hint packages—not archive superiority or learner
-improvement.
+compares redundant historical portfolios with portfolios that force inclusion of a behaviorally
+distinct recovery-false challenger while matching CWA quality. Its sealed Google run stopped
+fail-closed: 24 of 36 pairs resolved, 12 exhausted all retry waves, and the runner-classified
+first-wave exogenous rate was `36.11%`, above the prospective `15%` gate. Post-run AGY logs showed
+that the empty outputs followed soft-denied model tool requests, so retrying them as transport
+failures was itself a protocol defect. All resolved pairs were ceiling ties, but that incomplete
+prefix is non-inferential. No aggregate, archive-superiority, learner-improvement, Assay, or release
+claim was produced. The repaired AGY boundary now records structured, sanitized call evidence and
+scores a denied tool selection once as model behavior; it still requires a separately sealed live
+conformance sentinel before another paid experiment.
 
 This command is intentionally a one-cluster smoke harness. Repeating it does not produce an
 aggregate multi-environment experiment. The

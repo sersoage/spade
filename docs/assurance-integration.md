@@ -304,6 +304,48 @@ through partial-`c004` prefix. The run has no resolution manifest, Assay request
 was 205 of 450 authorized calls. These partial ceiling results are descriptive only; v5 did not
 establish a hint benefit or that the prompt treatment improves SPADE.
 
+### Incomplete quality-matched coverage-forced proxy
+
+The later six-stratum proxy used the v3/v4 candidates plus one newly qualified recovery-false
+challenger per stratum. Its intent digest was
+`sha256:df1a06c7fb854d5267ec4d1e41cd44c1ffd229018bf0f5a0dcde512fa47c4c09`;
+after 21 closed Pro design and hint calls, the independently audited actor plan sealed as
+`sha256:fc7989bfffb0851363137fe450e94cf11c8a4658b104f2f2729c08e98d843c2a`.
+All 18 candidate qualification, one-turn viability, CWA, hint, portfolio, runtime, source, and
+ledger bindings replayed exactly before the Flash actor stage began.
+
+The actor runner then made 90 closed calls: 53 returned nonempty text and 37 were recorded as the
+exact retryable `empty_response` result. Twenty-four of 36 whole pairs resolved; 12 exhausted all
+three waves, so the runner exited nonzero and wrote no aggregate. The first-wave exogenous failure
+rate was
+`13/36 = 36.11%`, above the sealed `15%` maximum. Post-run AGY logs showed that every empty output
+followed a soft-denied `RunCommand` request by the model. The runner had therefore misclassified
+model tool-use behavior as retryable exogenous loss. Those post-run logs were not part of the
+original evidence seal and diagnose the adapter; they do not authorize retrospective recoding. All
+24 retained pairs were `1.0`/`1.0` ceiling ties, but the incomplete prefix is descriptive and
+non-inferential. Total charged usage became 111 new calls and 316 of the 450 global authorization.
+
+Terminal validation found all 111 request/result/ledger records closed, no ambiguous reservation,
+canonical whole-pair retries, deterministic replay of every successful arm, and no parser or local
+environment failure. No aggregate, Assay request or decision, `model.lock`, release authorization,
+or learner-improvement claim exists. The requested Google routes remain
+`backend_identity_attested=false`. Before a new prospectively sealed, non-ceiling experiment, the
+AGY adapter must surface denied tool requests as terminal model behavior rather than retryable
+transport loss; the incomplete prefix must not be manually aggregated or pooled.
+
+The repaired boundary uses AGY's structured event stream, an isolated per-call Gemini directory,
+and digest-bound sanitized stream, stderr, log, and transcript receipts. A soft-denied tool
+selection is a terminal model no-action; evidence of tool execution is fatal; only an explicit
+provider refusal before any response ID may open a retry. Raw process logs and transcript reasoning
+or tool arguments are not copied into the publishable evidence tree. This is a code-level repair,
+not a completed live calibration: a separately sealed paid sentinel must establish that the
+installed AGY 1.1.23 wire format and isolation behavior conform before another experiment is
+launched.
+
+The terminal global count leaves 134 authorized inference calls unused. They are intentionally held:
+no AGY-only inference allocation can replace a randomized, same-checkpoint, compute-matched learner
+experiment when the claim is that SPADE training improved.
+
 ## Verification
 
 Run the focused SPADE integration tests from this repository:
