@@ -8,12 +8,11 @@ import asyncio
 import copy
 import logging
 import os
-import random
 import resource
 from argparse import Namespace
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -31,6 +30,11 @@ from spade.core.prompts.tool_use_template import TOOL_USE_SKILLS
 from spade.core.types import SpadeConfig
 from spade.core.utils.game_utils import compute_env_reward_scale, recompute_delayed_env_rewards, recompute_delayed_env_rewards_blend, recompute_delayed_env_rewards_micro_lp, recompute_delayed_env_rewards_regret
 from spade.slime.model_adapter import create_slime_model_adapter
+from spade.slime.static_pool import select_static_games
+from spade.slime.token_accounting import (
+    rollout_source_topology_metrics,
+    rollout_token_accounting_metrics,
+)
 from spade.slime.trajectory_converter import fan_out_thinking_sample, trajectory_to_slime_sample
 
 logger = logging.getLogger(__name__)
@@ -79,43 +83,6 @@ _WANDB_METRICS_DEFINED = False
 # Cached corpus loader (loaded once, reused across rollouts)
 _CORPUS = None
 _ENV_MEMORY: Optional[EnvironmentMemory] = None
-_STATIC_GAME_POOL_STATE: Dict[str, Tuple[Tuple[str, ...], List[Path], random.Random]] = {}
-
-
-def _select_static_games_without_replacement(
-    game_files: List[Path],
-    num_games: int,
-    pool_key: str,
-    seed: int,
-) -> List[Path]:
-    """Select a deterministic batch while exhausting the full pool before reuse."""
-    if not game_files:
-        return []
-
-    canonical_files = tuple(sorted(str(path.resolve()) for path in game_files))
-    state = _STATIC_GAME_POOL_STATE.get(pool_key)
-    if state is None or state[0] != canonical_files:
-        rng = random.Random(seed)
-        remaining = [Path(path) for path in canonical_files]
-        rng.shuffle(remaining)
-        state = (canonical_files, remaining, rng)
-        _STATIC_GAME_POOL_STATE[pool_key] = state
-
-    canonical_files, remaining, rng = state
-    selected = remaining[:num_games]
-    remaining = remaining[num_games:]
-
-    if len(selected) < num_games:
-        refill = [Path(path) for path in canonical_files]
-        rng.shuffle(refill)
-        selected_set = {str(path) for path in selected}
-        refill = [path for path in refill if str(path) not in selected_set]
-        needed = num_games - len(selected)
-        selected.extend(refill[:needed])
-        remaining = refill[needed:]
-
-    _STATIC_GAME_POOL_STATE[pool_key] = (canonical_files, remaining, rng)
-    return selected
 
 
 def _get_or_create_corpus(args: Namespace):
@@ -462,12 +429,18 @@ def spade_generate_rollout(
     if getattr(args, "spade_static_game_pool", False):
         if not existing_game_files:
             raise RuntimeError(f"[SPADE] Static game pool is empty: {games_dir}")
+        if num_games > len(existing_game_files):
+            raise RuntimeError(
+                f"[SPADE] Requested {num_games} games from a static pool of "
+                f"{len(existing_game_files)}; static pools do not oversample"
+            )
         if getattr(args, "spade_no_replacement", False):
-            existing_game_files = _select_static_games_without_replacement(
+            existing_game_files = select_static_games(
                 existing_game_files,
-                num_games=num_games,
-                pool_key=str(games_dir.resolve()),
+                num_games,
                 seed=getattr(args, "spade_fixed_pool_seed", 42),
+                schedule_id=getattr(args, "spade_static_pool_schedule_id", None),
+                rollout_id=rollout_id,
             )
         logger.info(
             "[SPADE] Static pool selected %d/%d games for rollout %d",
@@ -491,6 +464,11 @@ def spade_generate_rollout(
         use_solver_variance_reward=use_solver_variance_reward,
         regeneration_interval=game_regeneration_interval,
         allow_generation=not getattr(args, "spade_static_game_pool", False),
+    )
+    source_topology_metrics = rollout_source_topology_metrics(
+        collect_info,
+        global_batch_size,
+        require_complete=getattr(args, "spade_require_complete_rollout", False),
     )
 
     # Convert trajectories to Slime samples
@@ -787,6 +765,11 @@ def spade_generate_rollout(
     }
 
     # Inert-pad empty rollouts because Slime requires at least one sample.
+    if getattr(args, "spade_require_complete_rollout", False) and len(all_samples) != global_batch_size:
+        raise RuntimeError(
+            "[SPADE] Complete-rollout contract requires exactly "
+            f"{global_batch_size} real episode groups before padding; got {len(all_samples)}"
+        )
     if not all_samples:
         logger.critical(
             f"[SPADE] Rollout {rollout_id} produced 0 samples "
@@ -912,6 +895,11 @@ def spade_generate_rollout(
         metrics["rollout/actor_turns_per_episode"] = (
             n_turn_samples / n_fanned_episodes if n_fanned_episodes else 0.0
         )
+
+    # Account only after trim, inert padding, and optional turn fan-out so these
+    # counters describe the exact grouped sample payload handed to Slime.
+    metrics.update(rollout_token_accounting_metrics(grouped_samples))
+    metrics.update(source_topology_metrics)
 
     logger.info(
         f"[SPADE] Rollout {rollout_id} complete: "

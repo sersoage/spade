@@ -13,10 +13,17 @@ ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-24}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-192}"
 MAX_CONTEXT_LENGTH="${MAX_CONTEXT_LENGTH:-32768}"
 MAX_TURNS="${MAX_TURNS:-25}"
+SPADE_NUM_GAMES_PER_ROLLOUT="${SPADE_NUM_GAMES_PER_ROLLOUT:-24}"
+SPADE_TRAJECTORIES_PER_GAME="${SPADE_TRAJECTORIES_PER_GAME:-16}"
+SPADE_FIXED_POOL_SEED="${SPADE_FIXED_POOL_SEED:-42}"
+SPADE_STATIC_POOL_SCHEDULE_ID="${SPADE_STATIC_POOL_SCHEDULE_ID:-spade-static-default-v1}"
+SPADE_REQUIRE_COMPLETE_ROLLOUT="${SPADE_REQUIRE_COMPLETE_ROLLOUT:-0}"
+TRAIN_SEED="${TRAIN_SEED:-1234}"
+DISABLE_WANDB="${DISABLE_WANDB:-0}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/mnt/spade-workspace}"
 MODEL_ROOT="${MODEL_ROOT:-/scratch/spade-workspace}"
 
-if [[ -z "${WANDB_ENTITY:-}" ]]; then
+if [[ "${DISABLE_WANDB}" != "1" && -z "${WANDB_ENTITY:-}" ]]; then
    echo "ERROR: Set WANDB_ENTITY to your Weights & Biases team/entity." >&2
    exit 1
 fi
@@ -128,6 +135,7 @@ echo "  model: ${MODEL_NAME}"
 echo "  pool: ${STATIC_POOL_DIR} (${pool_count} GPT-5.5 curated games)"
 echo "  budget: ${NUM_ROLLOUT} rollouts"
 echo "  batch: ${ROLLOUT_BATCH_SIZE} games x ${TRAJECTORIES_PER_STEP} training trajectories"
+echo "  schedule: ${SPADE_STATIC_POOL_SCHEDULE_ID}; pool seed: ${SPADE_FIXED_POOL_SEED}; train seed: ${TRAIN_SEED}"
 echo "  actor thinking: ${ACTOR_THINKING}; KL: ${KL_COEF}"
 
 if [[ "${PREPARE_ONLY:-0}" == "1" ]]; then
@@ -153,7 +161,9 @@ sleep 3
 
 export PYTHONUNBUFFERED=1
 export WEAVE_PRINT_CALL_LINK=false
-pip install math_verify weave
+if [[ "${SKIP_RUNTIME_INSTALL:-0}" != "1" ]]; then
+   pip install math_verify weave
+fi
 
 NVLINK_COUNT="$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l | tr -d ' ' || true)"
 if [[ "${NVLINK_COUNT}" -gt 0 ]]; then
@@ -168,8 +178,8 @@ EVAL_CONFIG_FILE="${OUTPUT_DIR}/eval_aime.yaml"
 envsubst < "${PROJECT_ROOT}/eval_configs/eval_aime_avg32.yaml" > "${EVAL_CONFIG_FILE}"
 
 CKPT_ARGS=(
-   --hf-checkpoint "${MODEL_ROOT}/${MODEL_NAME}"
-   --ref-load "${MODEL_ROOT}/${MODEL_NAME}_torch_dist"
+   --hf-checkpoint "${HF_CHECKPOINT:-${MODEL_ROOT}/${MODEL_NAME}}"
+   --ref-load "${REF_CHECKPOINT:-${MODEL_ROOT}/${MODEL_NAME}_torch_dist}"
 )
 if [[ -n "${LOAD_DIR:-}" ]]; then
    CKPT_ARGS+=( --load "${LOAD_DIR}" )
@@ -187,6 +197,7 @@ ROLLOUT_ARGS=(
    --n-samples-per-prompt 1
    --rollout-max-response-len 8192
    --rollout-temperature 1.0
+   --seed "${TRAIN_SEED}"
    --global-batch-size "${GLOBAL_BATCH_SIZE}"
    --use-dynamic-global-batch-size
    --balance-data
@@ -204,10 +215,10 @@ SPADE_ARGS=(
    --spade-game-regeneration-interval 0
    --spade-skills Mathematical_Reasoning Logical_Deduction Spatial_Reasoning Pattern_Recognition Optimization Causal_Inference
    --spade-skills-per-regen 0
-   --spade-num-games-per-rollout 24
+   --spade-num-games-per-rollout "${SPADE_NUM_GAMES_PER_ROLLOUT}"
    --spade-games-dir "${GAMES_DIR}"
    --spade-game-difficulty medium
-   --spade-trajectories-per-game 16
+   --spade-trajectories-per-game "${SPADE_TRAJECTORIES_PER_GAME}"
    --spade-cache-dir "${OUTPUT_DIR}/spade_games_cache"
    --spade-env-generation-template qwen3_multiturn_game_generation
    --spade-actor-template qwen3_game
@@ -216,7 +227,12 @@ SPADE_ARGS=(
    --spade-proposer-training-delay 0
    --spade-static-game-pool
    --spade-no-replacement
+   --spade-fixed-pool-seed "${SPADE_FIXED_POOL_SEED}"
+   --spade-static-pool-schedule-id "${SPADE_STATIC_POOL_SCHEDULE_ID}"
 )
+if [[ "${SPADE_REQUIRE_COMPLETE_ROLLOUT}" == "1" ]]; then
+   SPADE_ARGS+=( --spade-require-complete-rollout )
+fi
 if [[ "${ACTOR_THINKING}" == "1" ]]; then
    SPADE_ARGS+=( --spade-actor-enable-thinking )
 fi
@@ -234,13 +250,16 @@ GRPO_ARGS=(
    --use-tis
 )
 
-WANDB_ARGS=(
-   --use-wandb
-   --wandb-team "${WANDB_ENTITY}"
-   --wandb-project "${WANDB_PROJECT:-spade}"
-   --wandb-group "${WANDB_GROUP:-paper-fixed-gpt55-${FIXED_MODEL_SIZE}}"
-   --wandb-key "${WANDB_API_KEY:?Set WANDB_API_KEY.}"
-)
+WANDB_ARGS=()
+if [[ "${DISABLE_WANDB}" != "1" ]]; then
+   WANDB_ARGS=(
+      --use-wandb
+      --wandb-team "${WANDB_ENTITY}"
+      --wandb-project "${WANDB_PROJECT:-spade}"
+      --wandb-group "${WANDB_GROUP:-paper-fixed-gpt55-${FIXED_MODEL_SIZE}}"
+      --wandb-key "${WANDB_API_KEY:?Set WANDB_API_KEY.}"
+   )
+fi
 
 EVAL_ARGS=(
    --eval-interval "${EVAL_INTERVAL:-100000}"

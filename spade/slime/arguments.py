@@ -720,6 +720,22 @@ def add_spade_arguments(parser):
         help="RNG seed for reproducible fixed pool sampling (default: 42)",
     )
     fixed_env_args.add_argument(
+        "--spade-static-pool-schedule-id",
+        type=str,
+        default="spade-static-default-v1",
+        help="Sealed schedule identifier for resume-stable static-pool sampling. "
+             "Paired assay arms must override the backward-compatible default "
+             "with the same manifest-bound value and use the same slot basenames.",
+    )
+    fixed_env_args.add_argument(
+        "--spade-require-complete-rollout",
+        action="store_true",
+        default=False,
+        help="Fail before an optimizer step unless the rollout produced the exact "
+             "requested actor episode count with zero play failures, filtering, or "
+             "inert padding. Intended for compute-matched causal assays.",
+    )
+    fixed_env_args.add_argument(
         "--spade-fixed-pool-max-difficulty",
         type=int,
         default=5,
